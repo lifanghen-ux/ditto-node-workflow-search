@@ -71,7 +71,7 @@ async function search(
       {
         repeats: options.repeats,
         concurrency: options.evaluationConcurrency,
-        retryAttempts: 3,
+        retryAttempts: 2,
         onCase(progress) {
           scoreSum += progress.result.score;
           console.log(JSON.stringify({
@@ -83,6 +83,7 @@ async function search(
             caseScore: progress.result.score,
             runningScore: scoreSum / progress.completed,
             failed: progress.result.error !== undefined,
+            failureKind: progress.result.failureKind ?? null,
           }));
         },
       },
@@ -183,7 +184,7 @@ async function testFrozen(
     {
       repeats: 1,
       concurrency: options.evaluationConcurrency,
-      retryAttempts: 3,
+      retryAttempts: 2,
       onCase(progress) {
         scoreSum += progress.result.score;
         console.log(JSON.stringify({
@@ -195,6 +196,7 @@ async function testFrozen(
           caseScore: progress.result.score,
           runningScore: scoreSum / progress.completed,
           failed: progress.result.error !== undefined,
+          failureKind: progress.result.failureKind ?? null,
         }));
       },
     },

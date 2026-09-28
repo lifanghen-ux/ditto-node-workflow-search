@@ -6,6 +6,7 @@ import test from "node:test";
 import type { AgentRunResult } from "../domain.js";
 import { humanevalAdapter } from "./code-adapters.js";
 import { extractPythonCandidate } from "./docker-python-judge.js";
+import { evaluateTasks } from "./evaluator.js";
 import { stratifiedSample } from "./sampling.js";
 import { scoreCompetitionMathAnswer, scoreDropAnswer, scoreGsm8kAnswer } from "./text-scores.js";
 import type { CodeJudge } from "./types.js";
@@ -96,4 +97,40 @@ test("evaluation reports monotonic live progress without exposing judge referenc
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("Ditto deadline failures receive one retry and remain separately classified", async () => {
+  const task = {
+    id: "math:validate:retry",
+    dataset: "math" as const,
+    prompt: "1+1",
+    outputInstruction: "Return a boxed answer.",
+    metadata: {},
+  };
+  const scorer = {
+    async score(_taskId: string, prediction: string) {
+      return { score: prediction === "ok" ? 1 : 0, expected: "ok", prediction, normalizedExpected: "ok", normalizedPrediction: prediction, method: "fixture" };
+    },
+    expectedLabel() { return "ok"; },
+  };
+  let attempts = 0;
+  const recovered = await evaluateTasks([task], scorer, async () => {
+    attempts++;
+    if (attempts === 1) throw new Error("Node failed [TIMEOUT]: INFER deadline exceeded");
+    return { answer: "ok", executedNodeIds: [], executedGraphIds: [], inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+  }, { retryAttempts: 2 });
+  assert.equal(attempts, 2);
+  assert.equal(recovered.score, 1);
+  assert.equal(recovered.timeoutRuns, 0);
+
+  attempts = 0;
+  const exhausted = await evaluateTasks([task], scorer, async () => {
+    attempts++;
+    throw new Error("Node failed [TIMEOUT]: INFER deadline exceeded");
+  }, { retryAttempts: 2 });
+  assert.equal(attempts, 2);
+  assert.equal(exhausted.failedRuns, 1);
+  assert.equal(exhausted.timeoutRuns, 1);
+  assert.equal(exhausted.wrongRuns, 0);
+  assert.equal(exhausted.results[0]?.failureKind, "timeout");
 });

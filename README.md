@@ -74,7 +74,7 @@ CODE_SOUL_BASE_URL=https://api.code-soul.com/v1
 CODE_SOUL_MODEL=qwen3.5:9b-32k
 CODE_SOUL_API_KEY=replace-locally
 CODE_SOUL_CONCURRENCY=3
-CODE_SOUL_TIMEOUT_MS=180000
+CODE_SOUL_TIMEOUT_MS=360000
 ```
 
 所有优化调用、样本并发、多个 solver 和 `TRAJECTORY` 内部调用共用同一个 3 路 semaphore，不会各自放大为 3 路。
@@ -151,6 +151,8 @@ runs/<dataset>/<run-id>/
 ```
 
 manifest 记录 Ditto 版本、模型名、非敏感 endpoint、数据文件哈希、抽样 ID、搜索设置和评分版本，不记录 API Key 或授权头。`runs/` 默认不进入 Git。
+
+模型或网络超时会自动重试一次；最终仍失败时，汇总通过 `timeoutRuns` 与 `wrongRuns` 区分基础设施超时和正常完成但答错，避免把两类问题混在诊断结果中。
 
 ## 当前限制
 

@@ -160,6 +160,7 @@ export interface CaseResult extends ScoreEvidence {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly totalTokens: number;
+  readonly failureKind?: "timeout" | "provider" | "execution" | "judge";
   readonly error?: string;
 }
 
@@ -170,6 +171,8 @@ export interface EvaluationSummary {
   readonly examples: number;
   readonly successfulRuns: number;
   readonly failedRuns: number;
+  readonly timeoutRuns: number;
+  readonly wrongRuns: number;
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly totalTokens: number;

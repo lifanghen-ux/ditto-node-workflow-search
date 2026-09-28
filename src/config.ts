@@ -15,7 +15,7 @@ export function loadProviderSettings(env: NodeJS.ProcessEnv = process.env): Prov
   const apiKey = env.CODE_SOUL_API_KEY;
   if (!apiKey?.trim()) throw new Error("CODE_SOUL_API_KEY is required. Put it in an ignored .env file or the process environment.");
   const concurrency = integer(env.CODE_SOUL_CONCURRENCY ?? "3", "CODE_SOUL_CONCURRENCY", 1, 64);
-  const timeoutMs = integer(env.CODE_SOUL_TIMEOUT_MS ?? "180000", "CODE_SOUL_TIMEOUT_MS", 1_000, 30 * 60_000);
+  const timeoutMs = integer(env.CODE_SOUL_TIMEOUT_MS ?? "360000", "CODE_SOUL_TIMEOUT_MS", 1_000, 30 * 60_000);
   const url = new URL(baseUrl);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
     throw new Error("CODE_SOUL_BASE_URL must be a plain HTTP(S) URL without credentials, query, or fragment");
