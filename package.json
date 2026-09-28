@@ -1,0 +1,29 @@
+{
+  "name": "ditto-node-workflow-search",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Node-to-Graph-to-Loop workflow search experiments built on the public Ditto npm package.",
+  "engines": {
+    "node": ">=24.0.0",
+    "npm": ">=11.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/test/*.test.js dist/benchmark/*.test.js",
+    "check": "npm run typecheck && npm test",
+    "search:drop": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset drop",
+    "search:humaneval": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset humaneval",
+    "search:mbpp": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset mbpp",
+    "search:gsm8k": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset gsm8k",
+    "search:math": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset math"
+  },
+  "dependencies": {
+    "@codesoul-co/ditto": "0.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "typescript": "^7.0.0"
+  }
+}

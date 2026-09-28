@@ -1,0 +1,160 @@
+# Ditto Node Workflow Search
+
+这是一个独立的 TypeScript 实验仓库：只使用已发布的 `@codesoul-co/ditto` npm 包，通过数据集反馈搜索更好的 Agent 结构，不修改 Ditto 源码或 `node_modules`。
+
+> Experimental / not Ditto Core. 当前仓库保持 `private: true`，表示禁止误发 npm；GitHub 仓库本身可以公开审查。
+
+## 核心定义
+
+负责人提出的关系在代码中被严格拆成三层：
+
+```text
+Node   = 一个最小的 Ditto 语义操作
+Graph  = 由一个或多个 Node 组成的局部工作流（不可变 DAG）
+Loop   = 串联、重复或按结果切换多个 Graph 的总调度器
+```
+
+搜索树中的每个顶点只保存一个真实 Ditto Node。根到叶的一条路径才代表一个候选 Agent 程序；程序被物化为局部 Graph，最后只通过一次 Ditto Loop 执行。
+
+```text
+搜索构建路径（一点一 Node）
+CONTEXT.LOAD → TRAJECTORY_A → TRAJECTORY_B → DELIBERATE → REFLECT
+       │
+       └─ parent 只表示“先构建了谁”，不是运行依赖
+
+物化后的运行结构
+prepare Graph:  CONTEXT.LOAD
+solve Graph:    TRAJECTORY_A ─┐
+                TRAJECTORY_B ─┴→ DELIBERATE
+refine Graph:   REFLECT
+
+Loop: prepare → solve → refine → 结束 / 有界重复 / 条件切换
+```
+
+同一 Graph 内只有 `dependencies` 会成为 DAG 边；跨 Graph 的信息由 Loop state 传递。替换一个 Node 表示从其父节点创建另一条兄弟分支，删除表示回退祖先并生成新后缀，不创建 `ADD`、`DELETE`、`MUTATION` 等伪 Node。
+
+## 搜索过程
+
+搜索思想参考 AFlow 的高分倾斜、随机探索、历史反馈和收敛停止，但不是 AFlow 复现：
+
+1. 建立可运行基线：`CONTEXT.LOAD → INFER.REASONING.TRAJECTORY`。
+2. 从已有搜索顶点中选择父节点；高分路径更容易被选中，同时保留随机探索。
+3. 优化模型通过一个标准 Ditto `SAMPLE` Graph 只提出一个 Node JSON。
+4. 可信编译器校验 Node 类型、配置、Graph 位置、依赖、深度和重复路径；模型不能返回 TypeScript 或绑定函数。
+5. 可运行路径被物化为 Graphs + Loop，在 validation split 上评分。
+6. 分数、失败数、token 与耗时回传给该叶子及全部祖先。
+7. 达到轮数或收敛条件后，冻结最佳 `leafId + Node path + Graph specs + Loop policy`。
+8. 单独运行 `test` 命令，才打开 test split；测试阶段不会再创建优化器或修改路径。
+
+## 数据集
+
+| 数据集 | 本地 AFlow split | 指标 | 特殊边界 |
+|---|---:|---|---|
+| DROP | 200 validate / 800 test | max token F1 | 支持 `\|` 分隔的多个可接受答案 |
+| HumanEval | 33 / 131 | pass@1 | 生成代码只在隔离 Docker 中运行 |
+| MBPP | 86 / 341 | pass@1 | 生成代码只在隔离 Docker 中运行 |
+| GSM8K | 264 / 1055 | 最后一个数字准确率 | 容差 `1e-6` |
+| MATH | 119 / 486 | boxed exact/numeric | 这是 AFlow 的 Level-5 精选 split，不是完整 MATH |
+
+原始数据不在仓库内。预期文件与隐私边界见 [`data/README.md`](data/README.md)。题面会进入 `BenchmarkTask`，标准答案、参考代码和隐藏测试只保留在 adapter 的私有闭包中。
+
+## 安装与配置
+
+要求 Node.js 24+、npm 11+。HumanEval/MBPP 还要求已启动 Docker daemon，并提前拉取 Python 镜像。
+
+```bash
+npm ci
+cp .env.example .env
+```
+
+在本地 `.env` 填写凭据；`.env`、数据集和运行产物都已忽略：
+
+```dotenv
+CODE_SOUL_BASE_URL=https://api.code-soul.com/v1
+CODE_SOUL_MODEL=qwen3.5:9b-32k
+CODE_SOUL_API_KEY=replace-locally
+CODE_SOUL_CONCURRENCY=3
+CODE_SOUL_TIMEOUT_MS=180000
+```
+
+所有优化调用、样本并发、多个 solver 和 `TRAJECTORY` 内部调用共用同一个 3 路 semaphore，不会各自放大为 3 路。
+
+## 离线验证
+
+```bash
+npm run check
+```
+
+默认 CI 不注入模型密钥，也不运行真实 benchmark。测试使用假 Provider，覆盖一点一 Node、Graph 编译、Loop 的顺序/重复/切换、评分器和私有 judge 隔离。
+
+## 运行实验
+
+先做小规模 validation 搜索：
+
+```bash
+npm run build
+node --env-file=.env dist/cli.js search \
+  --dataset math \
+  --data-dir data/datasets \
+  --search-limit 12 \
+  --rounds 2 \
+  --repeats 1 \
+  --evaluation-concurrency 3 \
+  --seed 42
+```
+
+将 `--dataset` 替换为 `drop`、`humaneval`、`mbpp`、`gsm8k` 或 `math`。`--search-limit 0` 表示完整 validation split。
+
+冻结后再运行 held-out test：
+
+```bash
+node --env-file=.env dist/cli.js test \
+  --dataset math \
+  --data-dir data/datasets \
+  --run-dir runs/math/<run-id> \
+  --test-limit 0
+```
+
+代码数据集需要先准备容器；judge 使用 `--pull=never`，不会在评分途中隐式下载：
+
+```bash
+docker pull python:3.13-slim
+node --env-file=.env dist/cli.js search \
+  --dataset humaneval \
+  --docker-image python:3.13-slim
+```
+
+建议正式复现实验改用镜像 digest。judge 采用无网络、只读根文件系统、非 root、移除 capabilities、`no-new-privileges`、CPU/内存/PID/输出限制和硬超时；Docker 不可用时明确失败，绝不回退到宿主机 `exec`。
+
+## 运行产物
+
+```text
+runs/<dataset>/<run-id>/
+├── manifest.json
+├── search-events.jsonl
+├── search-tree.jsonl          # 每行一个搜索顶点、恰好一个 Node
+├── search-tree-final.json
+├── experiences.jsonl
+├── evaluations/<leaf-id>/
+│   ├── summary.json
+│   └── samples.jsonl
+├── best/
+│   ├── plan.json
+│   ├── node-path.json
+│   ├── graphs.json
+│   ├── loop.json
+│   ├── validation-summary.json
+│   └── search-summary.json
+└── test/
+    ├── summary.json
+    └── samples.jsonl
+```
+
+manifest 记录 Ditto 版本、模型名、非敏感 endpoint、数据文件哈希、抽样 ID、搜索设置和评分版本，不记录 API Key 或授权头。`runs/` 默认不进入 Git。
+
+## 当前限制
+
+- MATH v1 使用平衡花括号解析、规范化 exact 和 numeric equivalence，尚不包含 SymPy 符号等价，因此不能把结果表述为论文级完整 MATH 复现。
+- 首版固定 `prepare / solve / refine` Graph 边界，执行器已经支持 `next / repeat / switch`；后续可在受控 allowlist 中开放更多 Loop policy 搜索。
+- Ditto npm 包的 Contract 目前主要是 TypeScript 编译期类型，没有运行时可枚举 JSON Schema；本仓库因此维护最小可信 Node proposal 校验层，没有修改上游包。
+- 仓库暂未声明开源许可证；公开可见不等于自动授予复用许可，许可证应由项目负责人决定。

@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+runs/
+*.log
+data/*
+!data/README.md
+.DS_Store
+coverage/
