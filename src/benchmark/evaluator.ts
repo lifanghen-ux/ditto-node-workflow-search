@@ -17,8 +17,15 @@ export async function evaluateTasks(
   const started = Date.now();
   const results: CaseResult[] = [];
   const repeatScores: number[] = [];
+  const total = tasks.length * repeats;
+  let completed = 0;
   for (let repeat = 0; repeat < repeats; repeat++) {
-    const current = await mapLimit(tasks, concurrency, (task) => evaluateOne(task, repeat, scorer, runner, retryAttempts));
+    const current = await mapLimit(tasks, concurrency, async (task) => {
+      const result = await evaluateOne(task, repeat, scorer, runner, retryAttempts);
+      completed++;
+      await options.onCase?.({ completed, total, result });
+      return result;
+    });
     results.push(...current);
     repeatScores.push(mean(current.map((result) => result.score)));
   }

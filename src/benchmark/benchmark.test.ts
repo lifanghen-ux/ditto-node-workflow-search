@@ -65,3 +65,35 @@ test("code adapter keeps tests private and delegates to the injected judge", asy
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("evaluation reports monotonic live progress without exposing judge references", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ditto-progress-"));
+  const updates: Array<{ completed: number; total: number; score: number }> = [];
+  try {
+    await writeFile(join(directory, "humaneval_validate.jsonl"), `${JSON.stringify({
+      task_id: "HumanEval/1",
+      prompt: "def answer(x):\n",
+      entry_point: "answer",
+      canonical_solution: "    return x",
+      test: "def check(candidate):\n    assert candidate(1) == 1",
+    })}\n`, "utf8");
+    const loaded = await humanevalAdapter.load({
+      dataDir: directory,
+      split: "validate",
+      codeJudge: { async judge() { return { passed: true, diagnostics: "ok", durationMs: 1 }; } },
+    });
+    await loaded.evaluate(async () => ({
+      answer: "def answer(x):\n    return x",
+      executedNodeIds: [], executedGraphIds: [], inputTokens: 1, outputTokens: 1, totalTokens: 2,
+    }), {
+      repeats: 2,
+      onCase: ({ completed, total, result }) => { updates.push({ completed, total, score: result.score }); },
+    });
+    assert.deepEqual(updates, [
+      { completed: 1, total: 2, score: 1 },
+      { completed: 2, total: 2, score: 1 },
+    ]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

@@ -1,6 +1,7 @@
 import type {
   AgentRunResult,
   BenchmarkTask,
+  CaseResult,
   DatasetName,
   EvaluationSummary,
   ScoreEvidence,
@@ -24,6 +25,12 @@ export interface BenchmarkEvaluationOptions {
   readonly repeats?: number;
   readonly concurrency?: number;
   readonly retryAttempts?: number;
+  /** Called after each case finishes; useful for live progress without exposing private judge data. */
+  readonly onCase?: (progress: {
+    readonly completed: number;
+    readonly total: number;
+    readonly result: CaseResult;
+  }) => void | Promise<void>;
 }
 
 /**

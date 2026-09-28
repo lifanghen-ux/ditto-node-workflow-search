@@ -64,10 +64,30 @@ async function search(
   await store.writeManifest(manifest);
   console.log(JSON.stringify({ phase: "search-start", dataset: options.dataset, examples: loaded.tasks.length, runDirectory: store.directory }));
 
-  const evaluate = (plan: Parameters<WorkflowExecutor["run"]>[0]): Promise<EvaluationSummary> => loaded.evaluate(
-    (task) => executor.run(plan, task),
-    { repeats: options.repeats, concurrency: options.evaluationConcurrency, retryAttempts: 3 },
-  );
+  const evaluate = (plan: Parameters<WorkflowExecutor["run"]>[0]): Promise<EvaluationSummary> => {
+    let scoreSum = 0;
+    return loaded.evaluate(
+      (task) => executor.run(plan, task),
+      {
+        repeats: options.repeats,
+        concurrency: options.evaluationConcurrency,
+        retryAttempts: 3,
+        onCase(progress) {
+          scoreSum += progress.result.score;
+          console.log(JSON.stringify({
+            phase: "validation-progress",
+            planId: plan.id,
+            completed: progress.completed,
+            total: progress.total,
+            caseId: progress.result.caseId,
+            caseScore: progress.result.score,
+            runningScore: scoreSum / progress.completed,
+            failed: progress.result.error !== undefined,
+          }));
+        },
+      },
+    );
+  };
   const proposer = new NextNodeProposer(experiment.runtime, experiment.providerName, experiment.model);
   const optimizer = new NodeWorkflowSearch({
     evaluate,
@@ -85,7 +105,12 @@ async function search(
         if (node.evaluation) await store.saveEvaluation(node.id, node.evaluation);
         if (experience) await store.saveExperience(experience);
       },
-      event: (value) => store.appendEvent({ at: new Date().toISOString(), ...value }),
+      async event(value) {
+        await store.appendEvent({ at: new Date().toISOString(), ...value });
+        if (["baseline-evaluated", "parent-selected", "path-evaluated", "proposal-failed", "evaluation-failed"].includes(String(value.type))) {
+          console.log(JSON.stringify({ phase: "search-progress", ...value }));
+        }
+      },
     },
   });
 
@@ -152,9 +177,27 @@ async function testFrozen(
   const loaded = await openBenchmark(options, "test");
   const dataPath = benchmarkPath(options, "test");
   console.log(JSON.stringify({ phase: "test-start", dataset: options.dataset, examples: loaded.tasks.length, frozenPlan: plan.id }));
+  let scoreSum = 0;
   const summary = await loaded.evaluate(
     (task) => executor.run(plan, task),
-    { repeats: 1, concurrency: options.evaluationConcurrency, retryAttempts: 3 },
+    {
+      repeats: 1,
+      concurrency: options.evaluationConcurrency,
+      retryAttempts: 3,
+      onCase(progress) {
+        scoreSum += progress.result.score;
+        console.log(JSON.stringify({
+          phase: "test-progress",
+          planId: plan.id,
+          completed: progress.completed,
+          total: progress.total,
+          caseId: progress.result.caseId,
+          caseScore: progress.result.score,
+          runningScore: scoreSum / progress.completed,
+          failed: progress.result.error !== undefined,
+        }));
+      },
+    },
   );
   await store.saveTest(summary);
   Object.assign(manifest, {
