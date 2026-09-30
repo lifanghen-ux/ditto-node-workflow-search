@@ -28,6 +28,8 @@ export interface ExperimentOptions {
   readonly dataset: DatasetName;
   readonly dataDir: string;
   readonly runDir?: string;
+  readonly resumeDir?: string;
+  readonly resumeRound?: number;
   readonly outputRoot: string;
   readonly searchLimit: number;
   readonly testLimit: number;
@@ -48,7 +50,7 @@ export interface ExperimentOptions {
 
 const FLAGS = new Set([
   "dataset", "data-dir", "run-dir", "output-root", "search-limit", "test-limit", "rounds", "repeats",
-  "test-repeats", "evaluation-concurrency", "search-concurrency", "test-concurrency",
+  "test-repeats", "evaluation-concurrency", "search-concurrency", "test-concurrency", "resume-dir", "resume-round",
   "search-provider-concurrency", "test-provider-concurrency", "top-k", "patience", "seed", "maximum-depth", "docker-image",
 ]);
 
@@ -71,6 +73,9 @@ export function parseArguments(argv: readonly string[], cwd = process.cwd()): Ex
   const rawDataset = values.get("dataset") ?? "math";
   if (!isDataset(rawDataset)) throw new Error(`Unsupported dataset: ${rawDataset}`);
   const runDir = values.get("run-dir");
+  const resumeDir = values.get("resume-dir");
+  const resumeRound = values.get("resume-round");
+  if ((resumeDir === undefined) !== (resumeRound === undefined) || (resumeDir && rawCommand !== "search")) throw new Error("search resume requires both --resume-dir and --resume-round");
   if (rawCommand === "test" && !runDir) throw new Error("test requires --run-dir <completed search run>");
   const searchConcurrency = integer(values.get("search-concurrency") ?? values.get("evaluation-concurrency")
     ?? process.env.DITTO_SEARCH_CONCURRENCY ?? "3", "search-concurrency", 1, 4_096);
@@ -81,6 +86,7 @@ export function parseArguments(argv: readonly string[], cwd = process.cwd()): Ex
     dataset: rawDataset,
     dataDir: resolve(cwd, values.get("data-dir") ?? "data/datasets"),
     ...(runDir ? { runDir: resolve(cwd, runDir) } : {}),
+    ...(resumeDir ? { resumeDir: resolve(cwd, resumeDir), resumeRound: integer(resumeRound!, "resume-round", 1, 1_000) } : {}),
     outputRoot: resolve(cwd, values.get("output-root") ?? "runs"),
     searchLimit: integer(values.get("search-limit") ?? "0", "search-limit", 0, 100_000),
     testLimit: integer(values.get("test-limit") ?? "0", "test-limit", 0, 100_000),

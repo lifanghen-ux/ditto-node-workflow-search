@@ -6,6 +6,13 @@ export class SeededRandom {
     this.#state = seed >>> 0 || 0x9e3779b9;
   }
 
+  get state(): number { return this.#state; }
+
+  restore(state: number): void {
+    if (!Number.isSafeInteger(state) || state < 1 || state > 0xffff_ffff) throw new Error("Invalid random state");
+    this.#state = state;
+  }
+
   next(): number {
     let value = this.#state;
     value ^= value << 13;

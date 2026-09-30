@@ -28,6 +28,19 @@ export interface SearchCallbacks {
   /** Called once for every created search vertex. Experience exists only for an evaluated runnable path. */
   node(node: SearchTreeNode, experience: SearchExperience | null, plan?: AgentPlanSpec): Promise<void>;
   event(value: Readonly<Record<string, unknown>>): Promise<void>;
+  state(value: SearchResumeState): Promise<void>;
+}
+
+export interface SearchResumeState {
+  readonly schemaVersion: 1;
+  readonly nodes: readonly SearchTreeNode[];
+  readonly experiences: readonly SearchExperience[];
+  readonly evaluationHistory: readonly Pick<EvaluationSummary, "score" | "standardDeviation">[];
+  readonly completedRounds: number;
+  readonly proposalFailures: number;
+  readonly nextSearchIndex: number;
+  readonly bestLeafId: string;
+  readonly randomState: number;
 }
 
 export interface SearchResult {
@@ -52,6 +65,7 @@ export interface NodeWorkflowSearchOptions {
   readonly maxDepth?: number;
   readonly taskGoal?: string;
   readonly initialInstruction?: string;
+  readonly resume?: SearchResumeState;
 }
 
 /**
@@ -71,6 +85,7 @@ export class NodeWorkflowSearch {
   readonly #maxDepth: number;
   readonly #taskGoal: string;
   readonly #initialInstruction: string | undefined;
+  readonly #resume: SearchResumeState | undefined;
 
   constructor(options: NodeWorkflowSearchOptions) {
     integer(options.rounds, "rounds", 1, 100_000);
@@ -83,6 +98,7 @@ export class NodeWorkflowSearch {
     this.#callbacks = {
       node: options.callbacks?.node ?? (async () => undefined),
       event: options.callbacks?.event ?? (async () => undefined),
+      state: options.callbacks?.state ?? (async () => undefined),
     };
     this.#random = new SeededRandom(options.seed);
     this.#rounds = options.rounds;
@@ -91,6 +107,7 @@ export class NodeWorkflowSearch {
     this.#maxDepth = maxDepth;
     this.#taskGoal = options.taskGoal ?? "Improve held-out task performance while keeping the Ditto workflow small and reliable.";
     this.#initialInstruction = options.initialInstruction;
+    this.#resume = options.resume;
   }
 
   async run(): Promise<SearchResult> {
@@ -98,6 +115,33 @@ export class NodeWorkflowSearch {
     const experiences: SearchExperience[] = [];
     const seenPaths = new Set<string>();
 
+    let bestLeafId: string;
+    let bestPlan: AgentPlanSpec;
+    let evaluationHistory: Array<Pick<EvaluationSummary, "score" | "standardDeviation">>;
+    let completedRounds = 0;
+    let proposalFailures = 0;
+    let nextSearchIndex = 2;
+    if (this.#resume) {
+      const saved = this.#resume;
+      if (saved.schemaVersion !== 1 || saved.completedRounds > this.#rounds) throw new Error("Invalid search resume state");
+      for (const node of saved.nodes) { tree.set(node.id, node); seenPaths.add(node.pathHash); }
+      assertOneNodePerTreeEntry(tree);
+      experiences.push(...saved.experiences);
+      this.#random.restore(saved.randomState);
+      completedRounds = saved.completedRounds;
+      proposalFailures = saved.proposalFailures;
+      nextSearchIndex = saved.nextSearchIndex;
+      bestLeafId = saved.bestLeafId;
+      if (!requiredNode(tree, bestLeafId).evaluation) throw new Error("Resume best leaf has no evaluation");
+      bestPlan = materializeAgentPlan(bestLeafId, nodePathTo(tree, bestLeafId));
+      evaluationHistory = [...saved.evaluationHistory];
+      for (const node of tree.values()) {
+        await this.#callbacks.node(node, experiences.find(entry => entry.searchNodeId === node.id) ?? null,
+          node.evaluation ? materializeAgentPlan(node.id, nodePathTo(tree, node.id)) : undefined);
+      }
+      await this.#callbacks.event({ type: "search-resumed", completedRounds, nextRound: completedRounds + 1,
+        bestLeafId, restoredScore: requiredNode(tree, bestLeafId).evaluation!.score });
+    } else {
     const rootSpec = createRootNode();
     const rootPath = Object.freeze([rootSpec]);
     const root = createSearchTreeNode("search-000", null, 0, rootSpec, rootPath);
@@ -123,8 +167,8 @@ export class NodeWorkflowSearch {
     const initialExperience = experienceFor(initial, initialEvaluation, null, true);
     experiences.push(initialExperience);
     backpropagateEvaluation(tree, initial.id, initialEvaluation);
-    let bestLeafId = initial.id;
-    let bestPlan = initialPlan;
+    bestLeafId = initial.id;
+    bestPlan = initialPlan;
     await this.#callbacks.node(requiredNode(tree, initial.id), initialExperience, initialPlan);
     await this.#callbacks.event({
       type: "baseline-evaluated",
@@ -132,15 +176,21 @@ export class NodeWorkflowSearch {
       score: initialEvaluation.score,
     });
 
-    const evaluationHistory: EvaluationSummary[] = [initialEvaluation];
-    let completedRounds = 0;
-    let proposalFailures = 0;
-    let nextSearchIndex = 2;
+    evaluationHistory = [initialEvaluation];
+    }
+    const saveState = async (): Promise<void> => this.#callbacks.state({
+      schemaVersion: 1, nodes: [...tree.values()].map(node => ({ ...node,
+        ...(node.evaluation ? { evaluation: { ...node.evaluation, results: [] } } : {}) })),
+      experiences: [...experiences], evaluationHistory: evaluationHistory.map(value => ({ score: value.score, standardDeviation: value.standardDeviation })),
+      completedRounds, proposalFailures, nextSearchIndex, bestLeafId, randomState: this.#random.state,
+    });
+    await saveState();
     let stoppedBecause: SearchResult["stoppedBecause"] = "max-rounds";
+    if (this.#resume && checkAFlowConvergence(evaluationHistory, 3, 0, this.#patience).converged) stoppedBecause = "converged";
 
     // Format/duplicate rejections regenerate inside a round. As in frozen
     // AFlow's outer loop, optimizer/provider exceptions consume a search slot.
-    while (completedRounds < this.#rounds) {
+    while (completedRounds < this.#rounds && stoppedBecause !== "converged") {
       const round = completedRounds + 1;
       const frontier = [...tree.values()].filter((node) =>
         node.evaluation !== undefined && node.depth < this.#maxDepth,
@@ -197,6 +247,7 @@ export class NodeWorkflowSearch {
           if (++proposalFailures >= 100) throw new Error("100 invalid proposals: search requires attention; no fabricated fallback was evaluated");
         } else {
           completedRounds++;
+          await saveState();
         }
         continue;
       }
@@ -275,6 +326,7 @@ export class NodeWorkflowSearch {
         unchangedTransitions: convergence.unchangedTransitions,
         converged: convergence.converged,
       });
+      await saveState();
       if (convergence.converged) {
         stoppedBecause = "converged";
         break;

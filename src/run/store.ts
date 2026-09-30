@@ -10,6 +10,7 @@ import type {
   WorkflowNodeSpec,
 } from "../domain.js";
 import { checkpointForPlan, publishCheckpoint } from "./checkpoints.js";
+import type { SearchResumeState } from "../search/optimizer.js";
 
 export interface FrozenProgram {
   readonly leaf: SearchTreeNode;
@@ -59,6 +60,10 @@ export class RunStore {
   async saveCheckpoint(plan: AgentPlanSpec): Promise<void> {
     const checkpoint = checkpointForPlan(plan, await this.readManifest());
     await publishCheckpoint(join(this.directory, "checkpoints"), checkpoint);
+  }
+
+  async saveResumeState(state: SearchResumeState): Promise<void> {
+    await writeJson(join(this.directory, "resume-state.json"), state);
   }
 
   async saveLiveCase(scope: string, result: CaseResult): Promise<void> {

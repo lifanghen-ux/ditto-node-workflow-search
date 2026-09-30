@@ -1,5 +1,6 @@
 param(
   [Parameter(Mandatory = $true)][string]$SessionDirectory,
+  [string]$RuntimeDirectory,
   [int]$TestConcurrency = 200,
   [int]$ProviderConcurrency = 200,
   [int]$WorkflowConcurrency = 2,
@@ -11,11 +12,13 @@ $ErrorActionPreference = "Stop"
 $DittoRepository = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $AFlowRepository = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
 $SessionDirectory = (Resolve-Path -LiteralPath $SessionDirectory).Path
+if (-not $RuntimeDirectory) { $RuntimeDirectory = $DittoRepository }
+$RuntimeDirectory = (Resolve-Path -LiteralPath $RuntimeDirectory).Path
 $runs = @(Get-ChildItem -LiteralPath (Join-Path $SessionDirectory "ditto-runs/math") -Directory)
 if ($runs.Count -ne 1) { throw "Expected exactly one search run in this session" }
 $output = Join-Path $SessionDirectory "round-tests"
 
-Push-Location $DittoRepository
+Push-Location $RuntimeDirectory
 try {
   foreach ($line in Get-Content -LiteralPath (Join-Path $DittoRepository ".env")) {
     if ($line -match '^\s*#' -or $line -notmatch '=') { continue }
@@ -26,7 +29,7 @@ try {
   $env:AFLOW_SCORER_PYTHON = Join-Path $AFlowRepository ".venv/Scripts/python.exe"
   $env:DITTO_PROVIDER_LOG = Join-Path $output "provider.jsonl"
   $arguments = @(
-    (Join-Path $DittoRepository "dist/round-test-runner.js"),
+    (Join-Path $RuntimeDirectory "dist/round-test-runner.js"),
     "--run-dir", $runs[0].FullName,
     "--data-dir", (Join-Path $SessionDirectory "aflow-reference/data/datasets"),
     "--output-dir", $output,

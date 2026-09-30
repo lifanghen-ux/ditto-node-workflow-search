@@ -8,6 +8,7 @@ import { createExperimentRuntime, type ExperimentRuntime } from "./ditto/runtime
 import { NodeWorkflowSearch } from "./search/optimizer.js";
 import { NextNodeProposer } from "./search/proposer.js";
 import { RunStore } from "./run/store.js";
+import { loadHistoricalResume } from "./run/resume.js";
 import { WorkflowExecutor } from "./workflow/executor.js";
 import { GENERATION, PROTOCOL } from "./protocol.js";
 
@@ -34,6 +35,19 @@ async function search(
   const store = await RunStore.create(options.outputRoot, options.dataset);
   const loaded = await openBenchmark(options, "validate");
   const dataPath = benchmarkPath(options, "validate");
+  const restored = options.resumeDir ? await loadHistoricalResume(options.resumeDir, options.resumeRound!) : undefined;
+  if (restored) {
+    const prior = restored.manifest;
+    const priorSearch = prior.search as Record<string, unknown>;
+    const expected = { rounds: options.rounds, repeats: options.repeats, testRepeats: options.testRepeats,
+      topK: options.topK, convergenceConsecutiveRounds: options.patience, maximumDepth: options.maximumDepth, seed: options.seed };
+    if (prior.model !== provider.model || prior.endpoint !== provider.baseUrl || prior.dataset !== options.dataset
+      || prior.metricProfile !== metricProfile(options.dataset) || JSON.stringify(prior.protocol) !== JSON.stringify(PROTOCOL)
+      || JSON.stringify(prior.generation) !== JSON.stringify(GENERATION) || prior.dittoVersion !== await dittoVersion()
+      || (prior.data as { sha256: string }).sha256 !== await sha256File(dataPath)
+      || JSON.stringify((prior.data as { selectedIds: string[] }).selectedIds) !== JSON.stringify(loaded.tasks.map(task => task.id))
+      || Object.entries(expected).some(([key, value]) => priorSearch[key] !== value)) throw new Error("Resume model/data/search settings differ from the frozen experiment");
+  }
   const manifest: Record<string, unknown> = {
     schemaVersion: 2,
     status: "searching",
@@ -50,6 +64,8 @@ async function search(
     independentRoundTests: { checkpointDirectory: "checkpoints", resultsUsedBySearch: false },
     generation: GENERATION,
     protocol: PROTOCOL,
+    ...(restored ? { resumedFrom: { directory: options.resumeDir, completedSearchRounds: restored.state.completedRounds,
+      discardedIncompleteRound: restored.state.completedRounds + 1, originalProviderConcurrency: restored.manifest.providerConcurrency } } : {}),
     search: {
       rounds: options.rounds,
       repeats: options.repeats,
@@ -116,10 +132,12 @@ async function search(
     seed: options.seed,
     taskGoal: taskGoal(options.dataset),
     initialInstruction: initialInstruction(options.dataset),
+    ...(restored ? { resume: restored.state } : {}),
     callbacks: {
       async node(node, experience, plan) {
         await store.saveSearchNode(node);
         if (node.evaluation) await store.saveEvaluation(node.id, node.evaluation);
+        if (node.evaluation && plan) await store.saveCheckpoint(plan);
         if (experience) await store.saveExperience(experience);
         if (node.evaluation && plan && node.evaluation.score > checkpointScore) {
           checkpointScore = node.evaluation.score;
@@ -129,10 +147,11 @@ async function search(
       },
       async event(value) {
         await store.appendEvent({ at: new Date().toISOString(), ...value });
-        if (["baseline-evaluated", "parent-selected", "path-evaluated", "proposal-failed", "evaluation-failed"].includes(String(value.type))) {
+        if (["search-resumed", "baseline-evaluated", "parent-selected", "path-evaluated", "proposal-failed", "evaluation-failed"].includes(String(value.type))) {
           console.log(JSON.stringify({ phase: "search-progress", ...value }));
         }
       },
+      async state(value) { await store.saveResumeState(value); },
     },
   });
 
