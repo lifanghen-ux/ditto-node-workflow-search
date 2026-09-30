@@ -7,7 +7,7 @@ import type {
   WorkflowNodeSpec,
 } from "../domain.js";
 import {
-  createInitialTrajectoryNode,
+  createInitialSampleNode,
   createRootNode,
   createSearchTreeNode,
   instantiateProposal,
@@ -18,7 +18,8 @@ import {
   validateNodePath,
 } from "../workflow/spec.js";
 import { backpropagateEvaluation } from "./backprop.js";
-import type { NextNodeProposer } from "./proposer.js";
+import { checkAFlowConvergence } from "./convergence.js";
+import { ProposalValidationError, type NextNodeProposer } from "./proposer.js";
 import { SeededRandom } from "./random.js";
 import { compareRunnableLeaves, selectParent } from "./selector.js";
 import { assertOneNodePerTreeEntry, nodePathTo, pathTo, validateSearchPathSemantics } from "./tree.js";
@@ -46,7 +47,7 @@ export interface NodeWorkflowSearchOptions {
   /** Number of one-Node expansion attempts after the baseline path. */
   readonly rounds: number;
   readonly topK: number;
-  /** Number of evaluated runnable paths without improvement before stopping. */
+  /** Number of unchanged Top-3 aggregate transitions before AFlow convergence. */
   readonly patience: number;
   readonly maxDepth?: number;
   readonly taskGoal?: string;
@@ -111,7 +112,7 @@ export class NodeWorkflowSearch {
       runnable: false,
     });
 
-    const initialSpec = createInitialTrajectoryNode(this.#initialInstruction);
+    const initialSpec = createInitialSampleNode(this.#initialInstruction);
     const initialPath = Object.freeze([...rootPath, initialSpec]);
     validateSearchPathSemantics(initialPath);
     const initial = createSearchTreeNode("search-001", root.id, 1, initialSpec, initialPath);
@@ -131,15 +132,22 @@ export class NodeWorkflowSearch {
       score: initialEvaluation.score,
     });
 
-    let evaluationsWithoutImprovement = 0;
+    const evaluationHistory: EvaluationSummary[] = [initialEvaluation];
+    let completedRounds = 0;
+    let proposalFailures = 0;
+    let nextSearchIndex = 2;
     let stoppedBecause: SearchResult["stoppedBecause"] = "max-rounds";
 
-    for (let round = 1; round <= this.#rounds; round++) {
-      const frontier = [...tree.values()].filter((node) => node.depth < this.#maxDepth);
+    // Format/duplicate rejections regenerate inside a round. As in frozen
+    // AFlow's outer loop, optimizer/provider exceptions consume a search slot.
+    while (completedRounds < this.#rounds) {
+      const round = completedRounds + 1;
+      const frontier = [...tree.values()].filter((node) =>
+        node.evaluation !== undefined && node.depth < this.#maxDepth,
+      );
       if (!frontier.length) break;
       const parent = selectParent(frontier, this.#topK, this.#random);
       const parentPath = nodePathTo(tree, parent.id);
-      const searchNodeId = `search-${String(round + 1).padStart(3, "0")}`;
       let instantiated: WorkflowNodeSpec | undefined;
       let proposedPath: readonly WorkflowNodeSpec[] | undefined;
 
@@ -162,8 +170,9 @@ export class NodeWorkflowSearch {
           const path = Object.freeze([...parentPath, node]);
           validateNodePath(path);
           validateSearchPathSemantics(path);
+          if (!isRunnableNodePath(path)) throw new ProposalValidationError("A candidate must produce a complete answer");
           const fingerprint = pathFingerprint(path);
-          if (seenPaths.has(fingerprint)) throw new Error("The proposed Node path has already been evaluated or expanded");
+          if (seenPaths.has(fingerprint)) throw new ProposalValidationError("The proposed Node path has already been evaluated or expanded");
           return { node, path };
         };
         proposal = await this.#proposer.propose({
@@ -184,9 +193,16 @@ export class NodeWorkflowSearch {
           parentSearchNodeId: parent.id,
           error: error instanceof Error ? error.message : String(error),
         });
+        if (error instanceof ProposalValidationError) {
+          if (++proposalFailures >= 100) throw new Error("100 invalid proposals: search requires attention; no fabricated fallback was evaluated");
+        } else {
+          completedRounds++;
+        }
         continue;
       }
+      proposalFailures = 0;
 
+      const searchNodeId = `search-${String(nextSearchIndex++).padStart(3, "0")}`;
       const child = createSearchTreeNode(
         searchNodeId,
         parent.id,
@@ -222,11 +238,13 @@ export class NodeWorkflowSearch {
           searchNodeId: child.id,
           error: error instanceof Error ? error.message : String(error),
         });
-        continue;
+        throw error;
       }
 
       const parentReference = directOrMeanScore(parent);
       const experience = experienceFor(child, evaluation, parentReference, false);
+      completedRounds++;
+      evaluationHistory.push(evaluation);
       experiences.push(experience);
       backpropagateEvaluation(tree, child.id, evaluation);
       const evaluatedChild = requiredNode(tree, child.id);
@@ -243,14 +261,21 @@ export class NodeWorkflowSearch {
 
       const bestLeaf = requiredNode(tree, bestLeafId);
       if (compareRunnableLeaves(evaluatedChild, bestLeaf) < 0) {
-        const scoreImproved = evaluation.score > bestLeaf.evaluation!.score;
         bestLeafId = evaluatedChild.id;
         bestPlan = plan;
-        evaluationsWithoutImprovement = scoreImproved ? 0 : evaluationsWithoutImprovement + 1;
-      } else {
-        evaluationsWithoutImprovement++;
       }
-      if (evaluationsWithoutImprovement >= this.#patience) {
+
+      const convergence = checkAFlowConvergence(evaluationHistory, 3, 0, this.#patience);
+      await this.#callbacks.event({
+        type: "convergence-checked",
+        round: completedRounds,
+        topK: 3,
+        z: 0,
+        topKMean: convergence.topKMean,
+        unchangedTransitions: convergence.unchangedTransitions,
+        converged: convergence.converged,
+      });
+      if (convergence.converged) {
         stoppedBecause = "converged";
         break;
       }

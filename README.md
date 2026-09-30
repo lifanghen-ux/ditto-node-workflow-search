@@ -37,7 +37,7 @@ Loop: prepare → solve → refine → 结束 / 有界重复 / 条件切换
 
 搜索思想参考 AFlow 的高分倾斜、随机探索、历史反馈和收敛停止，但不是 AFlow 复现：
 
-1. 建立可运行基线：`CONTEXT.LOAD → INFER.REASONING.TRAJECTORY`。
+1. 建立与 AFlow round 1 对齐的单次原始生成基线：`CONTEXT.LOAD → INFER.REASONING.SAMPLE`。
 2. 从已有搜索顶点中选择父节点；高分路径更容易被选中，同时保留随机探索。
 3. 优化模型通过一个标准 Ditto `SAMPLE` Graph 只提出一个 Node JSON。
 4. 可信编译器校验 Node 类型、配置、Graph 位置、依赖、深度和重复路径；模型不能返回 TypeScript 或绑定函数。
@@ -54,13 +54,13 @@ Loop: prepare → solve → refine → 结束 / 有界重复 / 条件切换
 | HumanEval | 33 / 131 | pass@1 | 生成代码只在隔离 Docker 中运行 |
 | MBPP | 86 / 341 | pass@1 | 生成代码只在隔离 Docker 中运行 |
 | GSM8K | 264 / 1055 | 最后一个数字准确率 | 容差 `1e-6` |
-| MATH | 119 / 486 | boxed exact/numeric | 这是 AFlow 的 Level-5 精选 split，不是完整 MATH |
+| MATH | 119 / 486 | AFlow exact/numeric/symbolic | 这是 AFlow 的 Level-5 精选 split，不是完整 MATH |
 
 原始数据不在仓库内。预期文件与隐私边界见 [`data/README.md`](data/README.md)。题面会进入 `BenchmarkTask`，标准答案、参考代码和隐藏测试只保留在 adapter 的私有闭包中。
 
 ## 安装与配置
 
-要求 Node.js 24+、npm 11+。HumanEval/MBPP 还要求已启动 Docker daemon，并提前拉取 Python 镜像。
+要求 Node.js 24+、npm 11+。MATH 的 AFlow 等价评分器还需要 Python、`regex`、SymPy 与 ANTLR runtime；HumanEval/MBPP 另要求已启动 Docker daemon，并提前拉取 Python 镜像。
 
 ```bash
 npm ci
@@ -70,11 +70,12 @@ cp .env.example .env
 在本地 `.env` 填写凭据；`.env`、数据集和运行产物都已忽略：
 
 ```dotenv
-CODE_SOUL_BASE_URL=https://api.code-soul.com/v1
-CODE_SOUL_MODEL=qwen3.5:9b-32k
+CODE_SOUL_BASE_URL=https://api.deepseek.com
+CODE_SOUL_MODEL=deepseek-flash
 CODE_SOUL_API_KEY=replace-locally
 CODE_SOUL_CONCURRENCY=3
-CODE_SOUL_TIMEOUT_MS=360000
+CODE_SOUL_TIMEOUT_MS=600000
+AFLOW_SCORER_PYTHON=python
 ```
 
 所有优化调用、样本并发、多个 solver 和 `TRAJECTORY` 内部调用共用同一个 3 路 semaphore，不会各自放大为 3 路。
@@ -89,17 +90,19 @@ npm run check
 
 ## 运行实验
 
-先做小规模 validation 搜索：
+正式 MATH 搜索默认使用 AFlow 对齐配置：119 道 validation、初始工作流加最多 20 个候选、每个工作流验证 5 次、Top-4 混合采样，以及 Top-3 均值连续 5 轮不变时早停：
 
 ```bash
 npm run build
 node --env-file=.env dist/cli.js search \
   --dataset math \
   --data-dir data/datasets \
-  --search-limit 12 \
-  --rounds 2 \
-  --repeats 1 \
+  --search-limit 0 \
+  --rounds 20 \
+  --repeats 5 \
   --evaluation-concurrency 3 \
+  --top-k 4 \
+  --patience 5 \
   --seed 42
 ```
 
@@ -112,7 +115,8 @@ node --env-file=.env dist/cli.js test \
   --dataset math \
   --data-dir data/datasets \
   --run-dir runs/math/<run-id> \
-  --test-limit 0
+  --test-limit 0 \
+  --test-repeats 3
 ```
 
 代码数据集需要先准备容器；judge 使用 `--pull=never`，不会在评分途中隐式下载：
@@ -152,11 +156,12 @@ runs/<dataset>/<run-id>/
 
 manifest 记录 Ditto 版本、模型名、非敏感 endpoint、数据文件哈希、抽样 ID、搜索设置和评分版本，不记录 API Key 或授权头。`runs/` 默认不进入 Git。
 
-模型或网络超时会自动重试一次；最终仍失败时，汇总通过 `timeoutRuns` 与 `wrongRuns` 区分基础设施超时和正常完成但答错，避免把两类问题混在诊断结果中。
+为贴合 AFlow/OpenAI SDK 行为，瞬时 Provider 故障最多发起 3 次 HTTP 尝试，完整工作流对任意异常最多执行 5 次、间隔 1 秒；最终仍失败时，汇总通过 `timeoutRuns` 与 `wrongRuns` 区分基础设施超时和正常完成但答错。
 
 ## 当前限制
 
-- MATH v1 使用平衡花括号解析、规范化 exact 和 numeric equivalence，尚不包含 SymPy 符号等价，因此不能把结果表述为论文级完整 MATH 复现。
+- MATH 评分由常驻 Python/SymPy 进程执行，语义与冻结的 AFlow scorer 一致；这会带来一个显式 Python 运行依赖，但不会修改 Ditto npm 包。
+- OpenAI Python SDK 会把部分缺失的可选字段实体化为 `null`；传入 Ditto 前会恢复为省略字段的 wire shape，避免把 `tool_calls: null` 误判为非法模型输出。
 - 首版固定 `prepare / solve / refine` Graph 边界，执行器已经支持 `next / repeat / switch`；后续可在受控 allowlist 中开放更多 Loop policy 搜索。
 - Ditto npm 包的 Contract 目前主要是 TypeScript 编译期类型，没有运行时可枚举 JSON Schema；本仓库因此维护最小可信 Node proposal 校验层，没有修改上游包。
 - 仓库暂未声明开源许可证；公开可见不等于自动授予复用许可，许可证应由项目负责人决定。

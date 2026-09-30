@@ -7,10 +7,12 @@ import {
   type NodeProposal,
   type SearchNodeStatistics,
   type SearchTreeNode,
+  type SampleNodeSpec,
   type StrategyName,
   type TrajectoryNodeSpec,
   type WorkflowNodeSpec,
 } from "../domain.js";
+import { GENERATION } from "../protocol.js";
 
 const GRAPH_ORDER = ["prepare", "solve", "refine"] as const;
 const NODE_ID = /^[a-z][a-z0-9-]{0,63}$/;
@@ -48,10 +50,22 @@ export function createInitialTrajectoryNode(instruction = "Solve the task carefu
       instruction,
       strategy: "cot",
       options: Object.freeze({ rounds: 1 }),
-      generation: Object.freeze({ temperature: 0.2, maxTokens: 2048 }),
+      generation: GENERATION,
       maxSteps: 16,
     }),
   });
+}
+
+/** Match AFlow round_1.Custom: one model call on the raw problem. */
+export function createInitialSampleNode(instruction = ""): SampleNodeSpec {
+  return Object.freeze({
+    id: "sample-1", type: "INFER.REASONING.SAMPLE", graphId: "solve",
+    dependencies: Object.freeze([]),
+    config: Object.freeze({ role: "solver", instruction, generation: GENERATION }),
+  });
+}
+export function isRawBaseline(node: WorkflowNodeSpec): boolean {
+  return node.id === "sample-1" && node.type === "INFER.REASONING.SAMPLE";
 }
 
 export function createSearchTreeNode(
@@ -130,7 +144,7 @@ export function validateNode(node: WorkflowNodeSpec): void {
     return;
   }
   if (node.type === "INFER.REASONING.SAMPLE") {
-    if (!node.config.instruction.trim() || node.config.instruction.length > 4_000) throw new Error("Invalid SAMPLE instruction");
+    if ((!isRawBaseline(node) && !node.config.instruction.trim()) || node.config.instruction.length > 4_000) throw new Error("Invalid SAMPLE instruction");
     return;
   }
   if (node.type === "INFER.REASONING.DELIBERATE") {
@@ -245,7 +259,7 @@ function freezeNode<T extends WorkflowNodeSpec>(node: T): T {
 
 function validateGeneration(value: { readonly temperature: number; readonly maxTokens: number }): void {
   finite(value.temperature, "temperature", 0, 2);
-  integer(value.maxTokens, "maxTokens", 64, 8_192);
+  integer(value.maxTokens, "maxTokens", 64, 32_768);
 }
 
 function validateStrategyOptions(strategy: StrategyName, options: Readonly<Record<string, number>>): void {

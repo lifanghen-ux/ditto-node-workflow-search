@@ -1,13 +1,10 @@
 import type { SearchTreeNode } from "../domain.js";
 import type { SeededRandom } from "./random.js";
 
-/**
- * AFlow-inspired parent selection for a Node-level tree.
- *
- * Scores are back-propagated from runnable leaf paths, so an internal tree Node
- * is ranked by workflows that have actually passed through it. Unvisited Nodes
- * are selected before the score mixture so partial paths are not stranded.
- */
+export const AFLOW_SELECTION_ALPHA = 0.2;
+export const AFLOW_SELECTION_LAMBDA = 0.3;
+
+/** Exact AFlow mixed-probability selection over complete evaluated workflows. */
 export function selectParent(
   candidates: readonly SearchTreeNode[],
   topK: number,
@@ -15,24 +12,21 @@ export function selectParent(
 ): SearchTreeNode {
   if (!candidates.length) throw new Error("Cannot select from an empty search frontier");
   if (!Number.isSafeInteger(topK) || topK < 1) throw new Error("topK must be a positive integer");
+  if (candidates.some((candidate) => !candidate.evaluation)) {
+    throw new Error("AFlow parent selection accepts only complete evaluated workflows");
+  }
 
-  const unvisited = candidates.filter((candidate) => candidate.statistics.visits === 0);
-  if (unvisited.length) return unvisited[Math.floor(random.next() * unvisited.length)]!;
-
-  const ranked = [...candidates].sort(compareSearchNodes);
+  // Array.sort is stable in supported Node versions, matching AFlow's score-only
+  // ordering for ties before sampling from the highest-scoring unique rounds.
+  const ranked = [...candidates].sort((left, right) => right.evaluation!.score - left.evaluation!.score);
   const pool = ranked.slice(0, Math.min(topK, ranked.length));
-  const root = candidates.find((candidate) => candidate.searchParentId === null);
-  if (root && !pool.some((candidate) => candidate.id === root.id)) pool.push(root);
-
-  const exploration = 0.3;
-  const temperature = 0.12;
-  const values = pool.map(searchValue);
-  const maximum = Math.max(...values);
-  const weights = values.map((value) => Math.exp((value - maximum) / temperature));
+  const scores = pool.map((candidate) => candidate.evaluation!.score * 100);
+  const maximum = Math.max(...scores);
+  const weights = scores.map((score) => Math.exp(AFLOW_SELECTION_ALPHA * (score - maximum)));
   const total = weights.reduce((sum, value) => sum + value, 0);
   if (!Number.isFinite(total) || total <= 0) throw new Error("Invalid parent-selection weights");
   const probabilities = weights.map((weight) =>
-    exploration / pool.length + (1 - exploration) * weight / total,
+    AFLOW_SELECTION_LAMBDA / pool.length + (1 - AFLOW_SELECTION_LAMBDA) * weight / total,
   );
 
   const sample = random.next();
@@ -67,10 +61,7 @@ export function compareRunnableLeaves(left: SearchTreeNode, right: SearchTreeNod
     return left.id.localeCompare(right.id);
   }
   return right.evaluation.score - left.evaluation.score
-    || left.evaluation.failedRuns - right.evaluation.failedRuns
-    || left.evaluation.totalTokens - right.evaluation.totalTokens
-    || left.evaluation.durationMs - right.evaluation.durationMs
-    || left.pathHash.localeCompare(right.pathHash)
+    // AFlow get_best_round resolves ties in favor of the earliest round.
     || left.id.localeCompare(right.id);
 }
 

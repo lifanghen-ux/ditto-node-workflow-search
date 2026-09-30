@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { isRawBaseline } from "./spec.js";
 import type { Context, ContextItem as SharedContextItem } from "@codesoul-co/ditto/contracts";
 import {
   graph,
@@ -217,7 +218,7 @@ function nodeInput(
 
     case "INFER.REASONING.TRAJECTORY":
       return {
-        messages: [{ role: "user", content: taskMessage }],
+        messages: [{ role: "user", content: taskMessage }, ...messages.map(({ message }) => message)],
         objective: node.config.instruction,
         ...(context ? { context: inferContext(context) } : {}),
         strategy: { name: node.config.strategy, options: { ...node.config.options } },
@@ -228,6 +229,12 @@ function nodeInput(
       };
 
     case "INFER.REASONING.SAMPLE": {
+      if (isRawBaseline(node)) {
+        return {
+          messages: [{ role: "user", content: node.config.instruction + task.prompt }],
+          model, generation: node.config.generation, metadata,
+        };
+      }
       const evidence = messages.length
         ? `\n\nOutputs from prerequisite Nodes:\n${messages.map(({ id, message }) => `[${id}] ${messageText(message)}`).join("\n")}`
         : "";
@@ -486,7 +493,9 @@ function inferContext(context: Context): readonly {
 }
 
 function taskText(task: BenchmarkTask): string {
-  return `Task:\n${task.prompt}\n\nOutput requirements:\n${task.outputInstruction}`;
+  return task.outputInstruction
+    ? `Task:\n${task.prompt}\n\nOutput requirements:\n${task.outputInstruction}`
+    : task.prompt;
 }
 
 function contextItemText(item: SharedContextItem): string {

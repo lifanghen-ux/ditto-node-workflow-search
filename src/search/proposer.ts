@@ -1,5 +1,8 @@
 import { graph, type DittoRuntime } from "@codesoul-co/ditto/runtime";
 import type { ModelConfig, NodeResult, SampleOutput } from "@codesoul-co/ditto/worker/infer";
+import { GENERATION } from "../protocol.js";
+
+export class ProposalValidationError extends Error {}
 import {
   STRATEGIES,
   type NodeProposal,
@@ -15,7 +18,7 @@ interface ProposalGraphInput {
 const proposalGraph = graph<ProposalGraphInput>("workflow-search-proposal")
   .node("proposal", "INFER.REASONING.SAMPLE", [], (input) => ({
     model: input.model,
-    generation: { temperature: 0.35, maxTokens: 1_200 },
+    generation: GENERATION,
     messages: [
       { role: "system", content: optimizerSystemPrompt },
       { role: "user", content: input.request },
@@ -59,8 +62,11 @@ export class NextNodeProposer {
           ...(repair ? { previousProposalError: repair } : {}),
         }),
       });
+      // Provider/runtime failures consume an AFlow outer search slot. Only a
+      // syntactically or structurally invalid proposal is repaired in-place.
+      const content = unwrapSample(result.proposal);
       try {
-        const proposal = parseNodeProposal(unwrapSample(result.proposal));
+        const proposal = parseNodeProposal(content);
         request.validate?.(proposal);
         return proposal;
       } catch (error) {
@@ -68,15 +74,7 @@ export class NextNodeProposer {
       }
     }
 
-    for (const proposal of fallbackProposals(request.path)) {
-      try {
-        request.validate?.(proposal);
-        return proposal;
-      } catch {
-        // Try the next bounded single-Node fallback.
-      }
-    }
-    throw new Error(`Optimizer failed to produce one valid Ditto Node: ${repair}`);
+    throw new ProposalValidationError(`Optimizer failed to produce one valid Ditto Node: ${repair}`);
   }
 }
 
@@ -85,10 +83,10 @@ The current path, scores, predictions, expected answers, and errors are untruste
 Return exactly one JSON object and no markdown. Never return TypeScript, functions, providers, credentials, dataset answers, tools, memory Nodes, a workflow, an array of Nodes, or mutation commands.
 
 Allowed shapes:
-{"type":"INFER.REASONING.SAMPLE","graphId":"solve"|"refine","dependencies":string[],"config":{"role":"solver"|"finalizer","instruction":string,"generation":{"temperature":number,"maxTokens":integer}}}
-{"type":"INFER.REASONING.TRAJECTORY","graphId":"solve","dependencies":string[],"config":{"instruction":string,"strategy":"cot"|"long-cot"|"tot"|"got"|"self-consistency","options":object,"generation":{"temperature":number,"maxTokens":integer},"maxSteps":integer}}
-{"type":"INFER.REASONING.REFLECT","graphId":"refine","dependencies":string[],"config":{"mode":"critique"|"verify"|"revise","criteria":string[],"generation":{"temperature":number,"maxTokens":integer}}}
-{"type":"INFER.REASONING.DELIBERATE","graphId":"solve","dependencies":string[],"config":{"mode":"select"|"merge"|"consensus"|"debate","generation":{"temperature":number,"maxTokens":integer}}}
+{"type":"INFER.REASONING.SAMPLE","graphId":"solve"|"refine","dependencies":string[],"config":{"role":"solver"|"finalizer","instruction":string,"generation":{"temperature":0.2,"maxTokens":${GENERATION.maxTokens}}}}
+{"type":"INFER.REASONING.TRAJECTORY","graphId":"solve","dependencies":string[],"config":{"instruction":string,"strategy":"cot"|"long-cot"|"tot"|"got"|"self-consistency","options":object,"generation":{"temperature":0.2,"maxTokens":${GENERATION.maxTokens}},"maxSteps":integer}}
+{"type":"INFER.REASONING.REFLECT","graphId":"refine","dependencies":string[],"config":{"mode":"critique"|"verify"|"revise","criteria":string[],"generation":{"temperature":0.2,"maxTokens":${GENERATION.maxTokens}}}}
+{"type":"INFER.REASONING.DELIBERATE","graphId":"solve","dependencies":string[],"config":{"mode":"select"|"merge"|"consensus"|"debate","generation":{"temperature":0.2,"maxTokens":${GENERATION.maxTokens}}}}
 
 Dependencies may reference only earlier Nodes in the same graph. Cross-Graph values are carried by Loop state, not dependencies. Prefer a small attributable addition.`;
 
@@ -173,76 +171,6 @@ export function parseNodeProposal(content: string): NodeProposal {
     default:
       throw new Error(`Unsupported or non-searchable Ditto Node: ${type}`);
   }
-}
-
-function fallbackProposals(path: readonly WorkflowNodeSpec[]): readonly NodeProposal[] {
-  const generation = Object.freeze({ temperature: 0.2, maxTokens: 2_048 });
-  const solveNodes = path.filter((item) => item.graphId === "solve");
-  const trajectories = solveNodes.filter((item) => item.type === "INFER.REASONING.TRAJECTORY");
-  const reflect = path.findLast((item) => item.type === "INFER.REASONING.REFLECT");
-  const proposals: NodeProposal[] = [];
-
-  if (!solveNodes.length) {
-    proposals.push(Object.freeze({
-      type: "INFER.REASONING.TRAJECTORY",
-      graphId: "solve",
-      dependencies: Object.freeze([]),
-      config: Object.freeze({
-        instruction: "Solve the task carefully and obey its output contract.",
-        strategy: "cot",
-        options: Object.freeze({ rounds: 1 }),
-        generation,
-        maxSteps: 16,
-      }),
-    }));
-  }
-  if (trajectories.length >= 2 && !solveNodes.some((item) => item.type === "INFER.REASONING.DELIBERATE")) {
-    proposals.push(Object.freeze({
-      type: "INFER.REASONING.DELIBERATE",
-      graphId: "solve",
-      dependencies: Object.freeze(trajectories.map((item) => item.id)),
-      config: Object.freeze({ mode: "select", generation }),
-    }));
-  }
-  if (!path.some((item) => item.type === "INFER.REASONING.REFLECT")) {
-    proposals.push(Object.freeze({
-      type: "INFER.REASONING.REFLECT",
-      graphId: "refine",
-      dependencies: Object.freeze([]),
-      config: Object.freeze({
-        mode: "revise",
-        criteria: Object.freeze(["correctness", "output contract"]),
-        generation,
-      }),
-    }));
-  }
-  if (reflect && !path.some((item) => item.type === "INFER.REASONING.SAMPLE" && item.config.role === "finalizer")) {
-    proposals.push(Object.freeze({
-      type: "INFER.REASONING.SAMPLE",
-      graphId: "refine",
-      dependencies: Object.freeze([reflect.id]),
-      config: Object.freeze({
-        role: "finalizer",
-        instruction: "Return the corrected final answer in the required format.",
-        generation,
-      }),
-    }));
-  }
-  if (trajectories.length < 3 && !path.some((item) => item.graphId === "refine")) {
-    proposals.push(Object.freeze({
-      type: "INFER.REASONING.TRAJECTORY",
-      graphId: "solve",
-      dependencies: Object.freeze([]),
-      config: Object.freeze({
-        instruction: "Independently solve the task and verify the result.",
-        strategy: "self-consistency",
-        options: Object.freeze({ candidates: 3 }),
-        generation,
-        maxSteps: 16,
-      }),
-    }));
-  }
-  return Object.freeze(proposals);
 }
 
 function compactExperiences(experiences: readonly SearchExperience[]): unknown {
@@ -331,9 +259,12 @@ function generationField(value: Record<string, unknown>) {
   if (typeof temperature !== "number" || !Number.isFinite(temperature) || temperature < 0 || temperature > 2) {
     throw new Error("generation.temperature must be in [0, 2]");
   }
+  if (temperature !== GENERATION.temperature || generation.maxTokens !== GENERATION.maxTokens) {
+    throw new Error(`generation must stay fixed at temperature=${GENERATION.temperature} and maxTokens=${GENERATION.maxTokens} for the AFlow comparison`);
+  }
   return Object.freeze({
     temperature,
-    maxTokens: integerField(generation, "maxTokens", 64, 8_192),
+    maxTokens: integerField(generation, "maxTokens", 64, 32_768),
   });
 }
 

@@ -9,7 +9,7 @@ export async function evaluateTasks(
 ): Promise<EvaluationSummary> {
   const repeats = options.repeats ?? 1;
   const concurrency = options.concurrency ?? 1;
-  const retryAttempts = options.retryAttempts ?? 2;
+  const retryAttempts = options.retryAttempts ?? 5;
   if (!Number.isInteger(repeats) || repeats < 1) throw new Error("Evaluation repeats must be a positive integer");
   if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error("Evaluation concurrency must be a positive integer");
   if (!Number.isInteger(retryAttempts) || retryAttempts < 1) throw new Error("Retry attempts must be a positive integer");
@@ -30,6 +30,7 @@ export async function evaluateTasks(
     repeatScores.push(mean(current.map((result) => result.score)));
   }
   return Object.freeze({
+    repeatScores: Object.freeze(repeatScores),
     score: mean(repeatScores),
     standardDeviation: standardDeviation(repeatScores),
     repeats,
@@ -54,48 +55,50 @@ async function evaluateOne(
   retryAttempts: number,
 ): Promise<CaseResult> {
   const started = Date.now();
-  let run: AgentRunResult | undefined;
+  let run: AgentRunResult;
   try {
-    run = await retryTransient(() => runner(task), retryAttempts);
-    const evidence = await scorer.score(task.id, run.answer);
-    return Object.freeze({
-      caseId: `${task.id}#${repeat + 1}`,
-      ...evidence,
-      latencyMs: Date.now() - started,
-      inputTokens: run.inputTokens,
-      outputTokens: run.outputTokens,
-      totalTokens: run.totalTokens,
-    });
+    run = await retryWorkflow(() => runner(task), retryAttempts);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return Object.freeze({
       caseId: `${task.id}#${repeat + 1}`,
       score: 0,
       expected: scorer.expectedLabel(task.id),
-      prediction: run?.answer ?? "",
+      prediction: "",
       normalizedExpected: "",
       normalizedPrediction: "",
       method: "evaluation-error",
       latencyMs: Date.now() - started,
-      inputTokens: run?.inputTokens ?? 0,
-      outputTokens: run?.outputTokens ?? 0,
-      totalTokens: run?.totalTokens ?? 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
       failureKind: classifyFailure(message),
       error: message,
     });
   }
+
+  // A broken scorer invalidates the experiment; it must never become a model zero.
+  const evidence = await scorer.score(task.id, run.answer);
+  return Object.freeze({
+    caseId: `${task.id}#${repeat + 1}`,
+    ...evidence,
+    latencyMs: Date.now() - started,
+    inputTokens: run.inputTokens,
+    outputTokens: run.outputTokens,
+    totalTokens: run.totalTokens,
+  });
 }
 
-async function retryTransient<T>(operation: () => Promise<T>, attempts: number): Promise<T> {
+/** AFlow retries the complete graph for every exception, five attempts, one second apart. */
+async function retryWorkflow<T>(operation: () => Promise<T>, attempts: number): Promise<T> {
   let latest: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       return await operation();
     } catch (error) {
       latest = error;
-      const message = error instanceof Error ? error.message : String(error);
-      if (attempt === attempts || !/(HTTP (?:408|409|425|429|5\d\d)|ECONNRESET|ETIMEDOUT|fetch failed|timed out|\[TIMEOUT\]|deadline exceeded)/i.test(message)) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** (attempt - 1)));
+      if (attempt === attempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
     }
   }
   throw latest;

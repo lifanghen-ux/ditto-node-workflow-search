@@ -5,7 +5,26 @@ import { createContextWorker } from "@codesoul-co/ditto/worker/context";
 import { createInferWorker, type ModelProvider } from "@codesoul-co/ditto/worker/infer";
 import type { AgentPlanSpec, BenchmarkTask, ReflectNodeSpec, SampleNodeSpec, WorkflowNodeSpec } from "../domain.js";
 import { WorkflowExecutor } from "../workflow/executor.js";
-import { createInitialTrajectoryNode, createRootNode, materializeAgentPlan } from "../workflow/spec.js";
+import { createInitialTrajectoryNode, createInitialSampleNode, createRootNode, materializeAgentPlan } from "../workflow/spec.js";
+import { GENERATION } from "../protocol.js";
+
+test("empty-instruction MATH baseline sends exactly AFlow's raw problem in one call", async () => {
+  let calls = 0;
+  const runtime = createDitto({ workers: [createContextWorker(), createInferWorker({ defaultProvider: "fixture", providers: {
+    fixture: { async invoke(input) {
+      calls++;
+      assert.deepEqual(input.messages, [{ role: "user", content: task.prompt }]);
+      assert.deepEqual(input.generation, GENERATION);
+      return { message: { role: "assistant", content: "2" }, finishReason: "stop" };
+    } },
+  } })] });
+  try {
+    const executor = new WorkflowExecutor(runtime, "fixture", "fixture");
+    const plan = materializeAgentPlan("baseline", [createRootNode(), createInitialSampleNode("")]);
+    assert.equal((await executor.run(plan, { ...task, outputInstruction: "" })).answer, "2");
+    assert.equal(calls, 1);
+  } finally { await runtime.close(); }
+});
 
 const task: BenchmarkTask = Object.freeze({
   id: "math:validate:fixture",

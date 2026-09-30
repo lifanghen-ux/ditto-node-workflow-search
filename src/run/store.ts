@@ -3,6 +3,7 @@ import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises
 import { dirname, join, resolve } from "node:path";
 import type {
   AgentPlanSpec,
+  CaseResult,
   EvaluationSummary,
   SearchExperience,
   SearchTreeNode,
@@ -20,6 +21,7 @@ export interface FrozenProgram {
 
 export class RunStore {
   readonly directory: string;
+  #writes: Promise<void> = Promise.resolve();
 
   private constructor(directory: string) {
     this.directory = directory;
@@ -51,6 +53,13 @@ export class RunStore {
 
   async appendEvent(value: Readonly<Record<string, unknown>>): Promise<void> {
     await appendJsonLine(join(this.directory, "search-events.jsonl"), value);
+  }
+
+  async saveLiveCase(scope: string, result: CaseResult): Promise<void> {
+    const path = scope === "test" ? join(this.directory, "test", "live-samples.jsonl")
+      : join(this.directory, "evaluations", scope, "live-samples.jsonl");
+    this.#writes = this.#writes.then(() => appendJsonLine(path, { at: new Date().toISOString(), ...result }));
+    await this.#writes;
   }
 
   /** One JSONL record is one search vertex, and one vertex contains exactly one Ditto Node. */

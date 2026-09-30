@@ -10,12 +10,12 @@ export interface ProviderSettings {
 }
 
 export function loadProviderSettings(env: NodeJS.ProcessEnv = process.env): ProviderSettings {
-  const baseUrl = env.CODE_SOUL_BASE_URL ?? "https://api.code-soul.com/v1";
-  const model = env.CODE_SOUL_MODEL ?? "qwen3.5:9b-32k";
+  const baseUrl = env.CODE_SOUL_BASE_URL ?? "https://api.deepseek.com";
+  const model = env.CODE_SOUL_MODEL ?? "deepseek-flash";
   const apiKey = env.CODE_SOUL_API_KEY;
   if (!apiKey?.trim()) throw new Error("CODE_SOUL_API_KEY is required. Put it in an ignored .env file or the process environment.");
   const concurrency = integer(env.CODE_SOUL_CONCURRENCY ?? "3", "CODE_SOUL_CONCURRENCY", 1, 64);
-  const timeoutMs = integer(env.CODE_SOUL_TIMEOUT_MS ?? "360000", "CODE_SOUL_TIMEOUT_MS", 1_000, 30 * 60_000);
+  const timeoutMs = integer(env.CODE_SOUL_TIMEOUT_MS ?? "600000", "CODE_SOUL_TIMEOUT_MS", 1_000, 30 * 60_000);
   const url = new URL(baseUrl);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
     throw new Error("CODE_SOUL_BASE_URL must be a plain HTTP(S) URL without credentials, query, or fragment");
@@ -33,6 +33,7 @@ export interface ExperimentOptions {
   readonly testLimit: number;
   readonly rounds: number;
   readonly repeats: number;
+  readonly testRepeats: number;
   readonly evaluationConcurrency: number;
   readonly topK: number;
   readonly patience: number;
@@ -43,7 +44,7 @@ export interface ExperimentOptions {
 
 const FLAGS = new Set([
   "dataset", "data-dir", "run-dir", "output-root", "search-limit", "test-limit", "rounds", "repeats",
-  "evaluation-concurrency", "top-k", "patience", "seed", "maximum-depth", "docker-image",
+  "test-repeats", "evaluation-concurrency", "top-k", "patience", "seed", "maximum-depth", "docker-image",
 ]);
 
 export function parseArguments(argv: readonly string[], cwd = process.cwd()): ExperimentOptions {
@@ -72,15 +73,16 @@ export function parseArguments(argv: readonly string[], cwd = process.cwd()): Ex
     dataDir: resolve(cwd, values.get("data-dir") ?? "data/datasets"),
     ...(runDir ? { runDir: resolve(cwd, runDir) } : {}),
     outputRoot: resolve(cwd, values.get("output-root") ?? "runs"),
-    searchLimit: integer(values.get("search-limit") ?? "12", "search-limit", 0, 100_000),
-    testLimit: integer(values.get("test-limit") ?? "30", "test-limit", 0, 100_000),
-    rounds: integer(values.get("rounds") ?? "4", "rounds", 1, 1_000),
-    repeats: integer(values.get("repeats") ?? "1", "repeats", 1, 20),
+    searchLimit: integer(values.get("search-limit") ?? "0", "search-limit", 0, 100_000),
+    testLimit: integer(values.get("test-limit") ?? "0", "test-limit", 0, 100_000),
+    rounds: integer(values.get("rounds") ?? "20", "rounds", 1, 1_000),
+    repeats: integer(values.get("repeats") ?? "5", "repeats", 1, 20),
+    testRepeats: integer(values.get("test-repeats") ?? "3", "test-repeats", 1, 20),
     evaluationConcurrency: integer(values.get("evaluation-concurrency") ?? "3", "evaluation-concurrency", 1, 64),
     topK: integer(values.get("top-k") ?? "4", "top-k", 1, 100),
-    patience: integer(values.get("patience") ?? "4", "patience", 1, 100),
+    patience: integer(values.get("patience") ?? "5", "patience", 1, 100),
     seed: integer(values.get("seed") ?? "42", "seed", 0, 0x7fffffff),
-    maximumDepth: integer(values.get("maximum-depth") ?? "12", "maximum-depth", 2, 24),
+    maximumDepth: integer(values.get("maximum-depth") ?? "10", "maximum-depth", 2, 24),
     dockerImage: values.get("docker-image") ?? process.env.CODE_JUDGE_IMAGE ?? "python:3.13-slim",
   });
 }

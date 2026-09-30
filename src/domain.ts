@@ -165,6 +165,7 @@ export interface CaseResult extends ScoreEvidence {
 }
 
 export interface EvaluationSummary {
+  readonly repeatScores?: readonly number[];
   readonly score: number;
   readonly standardDeviation: number;
   readonly repeats: number;

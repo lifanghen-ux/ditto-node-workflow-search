@@ -4,6 +4,7 @@ dist/
 .env.*
 !.env.example
 runs/
+smoke-runs/
 *.log
 data/*
 !data/README.md

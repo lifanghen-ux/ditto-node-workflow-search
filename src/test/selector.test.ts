@@ -1,57 +1,54 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { SearchNodeStatistics, SearchTreeNode } from "../domain.js";
+import type { EvaluationSummary, SearchTreeNode, TrajectoryNodeSpec } from "../domain.js";
 import { createInitialTrajectoryNode, createRootNode, createSearchTreeNode } from "../workflow/spec.js";
 import { SeededRandom } from "../search/random.js";
 import { selectParent } from "../search/selector.js";
 
-test("selector strongly favors high-scoring Nodes while preserving random exploration", () => {
+test("AFlow selector favors high-scoring complete workflows while preserving lambda exploration", () => {
   const rootSpec = createRootNode();
-  const root = withStatistics(
-    createSearchTreeNode("root", null, 0, rootSpec, [rootSpec]),
-    statistics(10, 0),
-  );
-  const trajectory = createInitialTrajectoryNode();
-  const high = withStatistics(
-    createSearchTreeNode("high", root.id, 1, trajectory, [rootSpec, trajectory]),
-    statistics(10, 1),
-  );
+  const lowSpec = createInitialTrajectoryNode();
+  const highSpec: TrajectoryNodeSpec = Object.freeze({ ...lowSpec, id: "trajectory-2" });
+  const low = withEvaluation(createSearchTreeNode("low", "root", 1, lowSpec, [rootSpec, lowSpec]), evaluation(0));
+  const high = withEvaluation(createSearchTreeNode("high", "root", 1, highSpec, [rootSpec, highSpec]), evaluation(1));
   const random = new SeededRandom(42);
   let selectedHigh = 0;
-  let selectedRoot = 0;
+  let selectedLow = 0;
   for (let index = 0; index < 2_000; index++) {
-    const selected = selectParent([root, high], 2, random);
+    const selected = selectParent([low, high], 2, random);
     if (selected.id === high.id) selectedHigh++;
-    else selectedRoot++;
+    else selectedLow++;
   }
 
-  assert.ok(selectedHigh > 1_500, `expected score bias, selected high ${selectedHigh} times`);
-  assert.ok(selectedRoot > 150, `expected uniform exploration, selected root ${selectedRoot} times`);
+  assert.ok(selectedHigh > 1_600, `expected score bias, selected high ${selectedHigh} times`);
+  assert.ok(selectedLow > 200, `expected uniform exploration, selected low ${selectedLow} times`);
 });
 
-test("selector completes an unvisited partial branch before score sampling", () => {
+test("AFlow selector rejects partial or unevaluated paths", () => {
   const rootSpec = createRootNode();
-  const root = withStatistics(
-    createSearchTreeNode("root", null, 0, rootSpec, [rootSpec]),
-    statistics(2, 1),
-  );
   const trajectory = createInitialTrajectoryNode();
-  const partial = createSearchTreeNode("partial", root.id, 1, trajectory, [rootSpec, trajectory]);
-  assert.equal(selectParent([root, partial], 2, new SeededRandom(7)).id, partial.id);
+  const partial = createSearchTreeNode("partial", "root", 1, trajectory, [rootSpec, trajectory]);
+  assert.throws(() => selectParent([partial], 2, new SeededRandom(7)), /complete evaluated workflows/);
 });
 
-function statistics(visits: number, score: number): SearchNodeStatistics {
+function evaluation(score: number): EvaluationSummary {
   return Object.freeze({
-    visits,
-    scoreSum: score * visits,
-    meanScore: score,
-    bestScore: score,
+    score,
+    standardDeviation: 0,
+    repeats: 5,
+    examples: 119,
+    successfulRuns: 595,
     failedRuns: 0,
-    totalTokens: 100 * visits,
-    totalLatencyMs: 10 * visits,
+    timeoutRuns: 0,
+    wrongRuns: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    durationMs: 0,
+    results: Object.freeze([]),
   });
 }
 
-function withStatistics(node: SearchTreeNode, value: SearchNodeStatistics): SearchTreeNode {
-  return Object.freeze({ ...node, statistics: value });
+function withEvaluation(node: SearchTreeNode, value: EvaluationSummary): SearchTreeNode {
+  return Object.freeze({ ...node, evaluation: value });
 }

@@ -1,10 +1,10 @@
 import { join } from "node:path";
-import type { BenchmarkTask, ScoreEvidence } from "../domain.js";
+import type { BenchmarkTask } from "../domain.js";
 import { evaluateTasks } from "./evaluator.js";
+import { AFlowMathScorer } from "./aflow-math-scorer.js";
 import { readJsonLines, requireRecord, requireString, stableId } from "./io.js";
 import { stratifiedSample } from "./sampling.js";
-import { scoreCompetitionMathAnswer } from "./text-scores.js";
-import type { BenchmarkAdapter, BenchmarkEvaluationOptions, BenchmarkLoadOptions, BenchmarkRunner, LoadedBenchmark, PrivateScorer } from "./types.js";
+import type { BenchmarkAdapter, BenchmarkEvaluationOptions, BenchmarkLoadOptions, BenchmarkRunner, LoadedBenchmark } from "./types.js";
 
 interface MathRow {
   readonly task: BenchmarkTask;
@@ -26,7 +26,10 @@ export const mathAdapter: BenchmarkAdapter = Object.freeze({
           id: `math:${options.split}:${row}:${stableId("problem", prompt).slice(-16)}`,
           dataset: "math",
           prompt,
-          outputInstruction: "Show the reasoning, then place the final answer in exactly one balanced \\boxed{...} expression.",
+          // AFlow's initial MATH workflow supplies the raw problem with no
+          // additional answer-format instruction. Its scorer handles boxed and
+          // final-sentence answers, so Ditto must not receive a stricter prompt.
+          outputInstruction: "",
           metadata: Object.freeze({ split: options.split, level, type }),
         }),
         solution,
@@ -40,24 +43,18 @@ export const mathAdapter: BenchmarkAdapter = Object.freeze({
 function loadedMath(split: "validate" | "test", rows: readonly MathRow[]): LoadedBenchmark {
   const references = new Map(rows.map((row) => [row.task.id, row.solution]));
   const tasks = Object.freeze(rows.map((row) => row.task));
-  const scorer: PrivateScorer = {
-    async score(taskId, prediction): Promise<ScoreEvidence> {
-      return scoreCompetitionMathAnswer(referenceFor(references, taskId), prediction);
-    },
-    expectedLabel(taskId): string {
-      return scoreCompetitionMathAnswer(referenceFor(references, taskId), "").expected;
-    },
-  };
   return Object.freeze({
     dataset: "math",
     split,
     tasks,
-    evaluate: (runner: BenchmarkRunner, options?: BenchmarkEvaluationOptions) => evaluateTasks(tasks, scorer, runner, options),
+    async evaluate(runner: BenchmarkRunner, options?: BenchmarkEvaluationOptions) {
+      const scorer = new AFlowMathScorer(references);
+      try {
+        await scorer.preflight();
+        return await evaluateTasks(tasks, scorer, runner, options);
+      } finally {
+        await scorer.close();
+      }
+    },
   });
-}
-
-function referenceFor(references: ReadonlyMap<string, string>, taskId: string): string {
-  const reference = references.get(taskId);
-  if (reference === undefined) throw new Error(`Unknown MATH task: ${taskId}`);
-  return reference;
 }
