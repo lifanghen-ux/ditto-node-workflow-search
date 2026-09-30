@@ -25,14 +25,32 @@ export function scoreMathAnswer(goldSolution: string, modelOutput: string): Math
   if (left !== undefined && right !== undefined && Math.abs(left - right) <= 1e-3) {
     return { score: 1, expected, prediction: predicted, normalizedExpected, normalizedPrediction, extraction: "boxed", equivalence: "numeric" };
   }
+  const listExpected = trailingBoxedList(goldSolution, predicted);
+  if (listExpected !== undefined) {
+    return {
+      score: 1,
+      expected: listExpected,
+      prediction: predicted,
+      normalizedExpected: normalizeMath(listExpected),
+      normalizedPrediction,
+      extraction: "boxed",
+      equivalence: "exact",
+    };
+  }
   return { score: 0, expected, prediction: predicted, normalizedExpected, normalizedPrediction, extraction: "boxed", equivalence: "none" };
 }
 
 /** Balanced-brace parser; unlike the AFlow regex, nested fractions remain intact. */
 export function extractLastBoxed(text: string): string | undefined {
+  return boxedEntries(text).at(-1)?.content;
+}
+
+interface BoxedEntry { readonly content: string; readonly start: number; readonly end: number }
+
+function boxedEntries(text: string): readonly BoxedEntry[] {
   const marker = "\\boxed{";
   let cursor = 0;
-  let latest: string | undefined;
+  const entries: BoxedEntry[] = [];
   while (cursor < text.length) {
     const start = text.indexOf(marker, cursor);
     if (start < 0) break;
@@ -45,7 +63,7 @@ export function extractLastBoxed(text: string): string | undefined {
       else if (character === "}" && !escaped(text, index)) {
         depth--;
         if (depth === 0) {
-          latest = text.slice(contentStart, index).trim();
+          entries.push({ content: text.slice(contentStart, index).trim(), start, end: index + 1 });
           index++;
           break;
         }
@@ -53,7 +71,44 @@ export function extractLastBoxed(text: string): string | undefined {
     }
     cursor = Math.max(index, start + marker.length);
   }
-  return latest;
+  return entries;
+}
+
+/** Accept only an explicit trailing list written as separate final boxed values. */
+function trailingBoxedList(gold: string, predicted: string): string | undefined {
+  const parts = splitTopLevel(predicted);
+  if (parts.length < 2) return undefined;
+  const entries = boxedEntries(gold);
+  if (entries.length < parts.length) return undefined;
+  const suffix = entries.slice(-parts.length);
+  if (gold.slice(suffix.at(-1)!.end).replace(/[\s$.,;:]+/g, "") !== "") return undefined;
+  for (let index = 1; index < suffix.length; index++) {
+    const separator = gold.slice(suffix[index - 1]!.end, suffix[index]!.start);
+    if (!/(?:\band\b|,)/i.test(separator)) return undefined;
+  }
+  const expected = suffix.map((item) => item.content);
+  return expected.map(normalizeMath).every((item, index) => item === normalizeMath(parts[index]!))
+    ? expected.join(",")
+    : undefined;
+}
+
+function splitTopLevel(value: string): readonly string[] {
+  const parts: string[] = [];
+  let start = 0;
+  let braces = 0;
+  let parentheses = 0;
+  for (let index = 0; index < value.length; index++) {
+    if (value[index] === "{") braces++;
+    else if (value[index] === "}") braces--;
+    else if (value[index] === "(") parentheses++;
+    else if (value[index] === ")") parentheses--;
+    else if (value[index] === "," && braces === 0 && parentheses === 0) {
+      parts.push(value.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  parts.push(value.slice(start).trim());
+  return parts.filter(Boolean);
 }
 
 export function normalizeMath(value: string): string {

@@ -35,3 +35,9 @@ test("standard MATH normalization ignores presentation-only units and equivalent
     1,
   );
 });
+
+test("an explicit trailing sequence of boxed reference values matches one boxed list", () => {
+  const gold = "This gives $a=\\boxed{-1}$ and $a=\\boxed{2}$.";
+  assert.equal(scoreMathAnswer(gold, "\\boxed{-1,2}").score, 1);
+  assert.equal(scoreMathAnswer("First $\\boxed{-1}$. Therefore $\\boxed{2}$.", "\\boxed{-1,2}").score, 0);
+});
