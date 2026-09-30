@@ -54,7 +54,7 @@ Loop: prepare → solve → refine → 结束 / 有界重复 / 条件切换
 | HumanEval | 33 / 131 | pass@1 | 生成代码只在隔离 Docker 中运行 |
 | MBPP | 86 / 341 | pass@1 | 生成代码只在隔离 Docker 中运行 |
 | GSM8K | 264 / 1055 | 最后一个数字准确率 | 容差 `1e-6` |
-| MATH | 119 / 486 | AFlow exact/numeric/symbolic | 这是 AFlow 的 Level-5 精选 split，不是完整 MATH |
+| MATH | 119 / 486 | AFlow symbolic + balanced normalized | 这是 AFlow 的 Level-5 精选 split，不是完整 MATH |
 
 原始数据不在仓库内。预期文件与隐私边界见 [`data/README.md`](data/README.md)。题面会进入 `BenchmarkTask`，标准答案、参考代码和隐藏测试只保留在 adapter 的私有闭包中。
 
@@ -160,7 +160,7 @@ manifest 记录 Ditto 版本、模型名、非敏感 endpoint、数据文件哈�
 
 ## 当前限制
 
-- MATH 评分由常驻 Python/SymPy 进程执行，语义与冻结的 AFlow scorer 一致；这会带来一个显式 Python 运行依赖，但不会修改 Ditto npm 包。
+- MATH 首先调用冻结的 AFlow Python/SymPy scorer；若其判 0，再以平衡 `boxed` 提取和保守的格式归一化复核。产物同时记录旧分数、是否回退及等价类型，减少嵌套分数、矩阵、单位和角度符号造成的误判，而不覆盖真正的数学错误。
 - OpenAI Python SDK 会把部分缺失的可选字段实体化为 `null`；传入 Ditto 前会恢复为省略字段的 wire shape，避免把 `tool_calls: null` 误判为非法模型输出。
 - 首版固定 `prepare / solve / refine` Graph 边界，执行器已经支持 `next / repeat / switch`；后续可在受控 allowlist 中开放更多 Loop policy 搜索。
 - Ditto npm 包的 Contract 目前主要是 TypeScript 编译期类型，没有运行时可枚举 JSON Schema；本仓库因此维护最小可信 Node proposal 校验层，没有修改上游包。

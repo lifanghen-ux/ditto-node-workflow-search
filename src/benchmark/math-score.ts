@@ -61,8 +61,17 @@ export function normalizeMath(value: string): string {
   result = result.replace(/^\$+|\$+$/g, "");
   result = result.replace(/\\(?:left|right)/g, "");
   result = result.replace(/\\(?:dfrac|tfrac)/g, "\\frac");
+  // Standard MATH answers often carry presentation-only units. Keep textual
+  // answers, but remove unit wrappers and degree markers before comparison.
+  result = result.replace(/\\text\{\s*(?:square\s+)?(?:units?|cents?|degrees?)\s*\}/gi, "");
+  result = result.replace(/\^?\\circ|°/g, "");
+  result = result.replace(/\\text\{([^{}]*)\}/g, "$1");
+  result = result.replace(/\\begin\{pmatrix\}|\\end\{pmatrix\}/g, "");
   result = result.replace(/\\(?:,|!|;|:|quad|qquad)/g, "");
   result = result.replace(/\s+/g, "");
+  result = result.replace(/\\sqrt(?!\{)([-+]?\d+(?:\.\d+)?)/g, "\\sqrt{$1}");
+  result = result.replace(/\\frac\{([-+]?\d+)\}\{([-+]?\d+)\}/g, "$1/$2");
+  result = result.replace(/\\frac([-+]?\d)([-+]?\d)/g, "$1/$2");
   result = result.replace(/\{,\}/g, "");
   result = stripOuterBraces(result);
   return result;

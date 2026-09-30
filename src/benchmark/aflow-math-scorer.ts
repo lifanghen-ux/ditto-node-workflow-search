@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import type { ScoreEvidence } from "../domain.js";
+import { scoreMathAnswer, type MathScore } from "./math-score.js";
 import type { PrivateScorer } from "./types.js";
 
 interface ScorerResponse {
@@ -17,6 +18,7 @@ interface ScorerResponse {
 
 interface PendingScore {
   readonly rawPrediction: string;
+  readonly normalized: MathScore;
   readonly resolve: (evidence: ScoreEvidence) => void;
   readonly reject: (error: Error) => void;
 }
@@ -31,9 +33,11 @@ export class AFlowMathScorer implements PrivateScorer {
   #nextId = 1;
   #stderr = "";
   #closed = false;
+  readonly #normalizedFallback: boolean;
 
-  constructor(references: ReadonlyMap<string, string>) {
+  constructor(references: ReadonlyMap<string, string>, options: { readonly normalizedFallback?: boolean } = {}) {
     this.#references = references;
+    this.#normalizedFallback = options.normalizedFallback ?? true;
     const python = process.env.AFLOW_SCORER_PYTHON?.trim() || "python";
     const script = fileURLToPath(new URL("../../scripts/aflow_math_scorer.py", import.meta.url));
     const env = {
@@ -77,9 +81,10 @@ export class AFlowMathScorer implements PrivateScorer {
     if (this.#closed) return Promise.reject(new Error("AFlow MATH scorer is closed"));
     if (this.#failure) return Promise.reject(this.#failure);
     const reference = referenceFor(this.#references, taskId);
+    const normalized = scoreMathAnswer(reference, prediction);
     const id = this.#nextId++;
     return new Promise<ScoreEvidence>((resolve, reject) => {
-      this.#pending.set(id, { rawPrediction: prediction, resolve, reject });
+      this.#pending.set(id, { rawPrediction: prediction, normalized, resolve, reject });
       this.#child.stdin.write(`${JSON.stringify({ id, reference, prediction })}\n`, (error) => {
         if (!error) return;
         this.#pending.delete(id);
@@ -123,15 +128,20 @@ export class AFlowMathScorer implements PrivateScorer {
       pending.reject(new Error("AFlow MATH scorer returned an incomplete result"));
       return;
     }
+    const normalizedFallback = this.#normalizedFallback && response.score === 0 && pending.normalized.score === 1;
     pending.resolve(Object.freeze({
-      score: response.score,
-      expected: response.expected,
+      score: normalizedFallback ? 1 : response.score,
+      expected: pending.normalized.expected,
       prediction: pending.rawPrediction,
-      normalizedExpected: response.expected,
-      normalizedPrediction: response.prediction,
-      method: "aflow-math-reference",
+      normalizedExpected: pending.normalized.normalizedExpected,
+      normalizedPrediction: pending.normalized.normalizedPrediction,
+      method: normalizedFallback ? "balanced-normalized-fallback" : "aflow-math-reference",
       details: Object.freeze({
         sourceHash: response.sourceHash,
+        legacyAFlowScore: response.score,
+        normalizedFallback,
+        normalizedEquivalence: pending.normalized.equivalence,
+        normalizedExtraction: pending.normalized.extraction,
       }),
     }));
   }

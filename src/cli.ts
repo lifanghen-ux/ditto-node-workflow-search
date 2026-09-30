@@ -277,7 +277,7 @@ function metricProfile(dataset: DatasetName): string {
     case "humaneval": return "docker-private-tests-pass-at-1-v1";
     case "mbpp": return "docker-private-tests-pass-at-1-v1";
     case "gsm8k": return "last-number-accuracy-v1";
-    case "math": return "aflow-math-exact-numeric-symbolic-v1";
+    case "math": return "aflow-symbolic-plus-balanced-normalized-v2";
   }
 }
 

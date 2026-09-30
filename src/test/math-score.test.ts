@@ -23,3 +23,15 @@ test("missing boxed answer is a visible scoring failure", () => {
   assert.equal(result.extraction, "missing-box");
   assert.equal(normalizeMath(" { 7 } "), "7");
 });
+
+test("standard MATH normalization ignores presentation-only units and equivalent matrix fractions", () => {
+  assert.equal(scoreMathAnswer("Answer: \\boxed{100\\text{ square units}}", "\\boxed{100}").score, 1);
+  assert.equal(scoreMathAnswer("Answer: \\boxed{120^\\circ}", "\\boxed{120}").score, 1);
+  assert.equal(
+    scoreMathAnswer(
+      "Answer: \\boxed{\\begin{pmatrix} 1/5 \\\\ -18/5 \\end{pmatrix}}",
+      "\\boxed{\\begin{pmatrix}\\frac{1}{5}\\\\-\\frac{18}{5}\\end{pmatrix}}",
+    ).score,
+    1,
+  );
+});
