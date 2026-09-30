@@ -67,7 +67,7 @@ await writeFile(join(session, "audit.json"), `${JSON.stringify({
   protocol: { validationExamples: 119, validationRepeats: 5, searchExpansionLimit: 20,
     includesSeparateBaseline: true, testExamples: 486, testRepeats: 3, concurrency: 3,
     topK: 4, convergenceTopK: 3, convergenceConsecutiveRounds: 5, seed: 42, maximumDepth: 10 },
-  metricProfile: "aflow-symbolic-plus-balanced-normalized-v2",
+  metricProfile: "aflow-symbolic-plus-declared-answer-normalized-v3",
   dataset: { validate: hash(validationText), test: hash(testText) },
   aflowScorer: hash(await readFile(join(aflow, "benchmarks/math.py"))),
   dittoLock: hash(await readFile(join(snapshot, "package-lock.json"))),

@@ -4,26 +4,28 @@ export interface MathScore {
   readonly prediction: string;
   readonly normalizedExpected: string;
   readonly normalizedPrediction: string;
-  readonly extraction: "boxed" | "missing-box";
+  readonly extraction: "boxed" | "explicit-answer" | "emphasized-answer" | "math-answer" | "bare-answer" | "missing-box";
   readonly equivalence: "exact" | "numeric" | "none";
 }
 
 export function scoreMathAnswer(goldSolution: string, modelOutput: string): MathScore {
   const expected = extractLastBoxed(goldSolution);
   if (expected === undefined) throw new Error("Gold MATH solution does not contain a balanced \\boxed answer");
-  const predicted = extractLastBoxed(modelOutput);
+  const extracted = extractMathAnswer(modelOutput);
+  const predicted = extracted?.answer;
+  const extraction = extracted?.extraction ?? "missing-box";
   const normalizedExpected = normalizeMath(expected);
   const normalizedPrediction = predicted === undefined ? "" : normalizeMath(predicted);
   if (predicted === undefined) {
     return { score: 0, expected, prediction: "", normalizedExpected, normalizedPrediction, extraction: "missing-box", equivalence: "none" };
   }
   if (normalizedPrediction === normalizedExpected) {
-    return { score: 1, expected, prediction: predicted, normalizedExpected, normalizedPrediction, extraction: "boxed", equivalence: "exact" };
+    return { score: 1, expected, prediction: predicted, normalizedExpected, normalizedPrediction, extraction, equivalence: "exact" };
   }
   const left = numericValue(normalizedPrediction);
   const right = numericValue(normalizedExpected);
   if (left !== undefined && right !== undefined && Math.abs(left - right) <= 1e-3) {
-    return { score: 1, expected, prediction: predicted, normalizedExpected, normalizedPrediction, extraction: "boxed", equivalence: "numeric" };
+    return { score: 1, expected, prediction: predicted, normalizedExpected, normalizedPrediction, extraction, equivalence: "numeric" };
   }
   const listExpected = trailingBoxedList(goldSolution, predicted);
   if (listExpected !== undefined) {
@@ -33,11 +35,68 @@ export function scoreMathAnswer(goldSolution: string, modelOutput: string): Math
       prediction: predicted,
       normalizedExpected: normalizeMath(listExpected),
       normalizedPrediction,
-      extraction: "boxed",
+      extraction,
       equivalence: "exact",
     };
   }
-  return { score: 0, expected, prediction: predicted, normalizedExpected, normalizedPrediction, extraction: "boxed", equivalence: "none" };
+  return { score: 0, expected, prediction: predicted, normalizedExpected, normalizedPrediction, extraction, equivalence: "none" };
+}
+
+/** Select a declared answer using output syntax only, never the reference value.
+ * The raw-problem baseline does not request boxes, so prose/Markdown final
+ * answers must be accepted too. Never search arbitrary intermediate numbers.
+ */
+export function extractMathAnswer(output: string): {
+  readonly answer: string;
+  readonly extraction: MathScore["extraction"];
+} | undefined {
+  const boxed = extractLastBoxed(output);
+  if (boxed !== undefined) return { answer: boxed, extraction: "boxed" };
+  const text = output.trim();
+  const labels = [...text.matchAll(/(?:^|\n|\b)(?:final\s+)?answer\s*(?::|=|is\b)\s*([^\n]*)/gi)];
+  const label = labels.at(-1);
+  if (label) {
+    const answer = cleanDeclaredAnswer(label[1]!);
+    // An explicit but unparsable answer must not fall back to an earlier value.
+    return answer === undefined ? undefined : { answer, extraction: "explicit-answer" };
+  }
+  const bold = [...text.matchAll(/\*\*([^*\n]+)\*\*/g)];
+  const finalBold = bold.at(-1);
+  if (finalBold && /^[\s.!]*$/.test(text.slice(finalBold.index! + finalBold[0].length))) {
+    const answer = cleanDeclaredAnswer(finalBold[1]!);
+    return answer === undefined ? undefined : { answer, extraction: "emphasized-answer" };
+  }
+  // A standalone opening answer followed by an explanation is common for
+  // word-valued questions. Other highlighted values make it ambiguous.
+  if (bold.length === 1 && /^\*\*[^*\n]+\*\*\s*\n\s*\n/.test(text)) {
+    const answer = cleanDeclaredAnswer(bold[0]![1]!);
+    if (answer !== undefined) return { answer, extraction: "emphasized-answer" };
+  }
+  const math = text.match(/(?:\\\[([\s\S]*?)\\\]|\\\(([^\n]*?)\\\)|\$\$([\s\S]*?)\$\$|\$([^$\n]+)\$)[\s.!]*$/);
+  if (math) {
+    const answer = cleanDeclaredAnswer(math[1] ?? math[2] ?? math[3] ?? math[4]!);
+    if (answer !== undefined) return { answer, extraction: "math-answer" };
+  }
+  const answer = cleanDeclaredAnswer(text);
+  return answer === undefined ? undefined : { answer, extraction: "bare-answer" };
+}
+
+function cleanDeclaredAnswer(value: string): string | undefined {
+  let text = value.trim().replace(/\*\*|__/g, "").replace(/[.!]+$/, "").trim();
+  text = text.replace(/^\\\[|\\\]$|^\\\(|\\\)$|^\$+|\$+$/g, "").trim();
+  if (text.includes("\n") && !text.includes("=")) return undefined;
+  // Use the final right-hand side of an equation, retaining complete lists.
+  if (text.includes("=") && !/[<>]|\\(?:le|ge|neq)/.test(text)) text = text.slice(text.lastIndexOf("=") + 1).trim();
+  const units = /\s+(?:(?:square|cubic|bad|good)\s+)?(?:units?|cents?|degrees?|workers?|sides?|feet|foot|inches|meters?|metres?|cm|mm|miles?|euros?|pounds?|dollars?|minutes?|hours?|seconds?|days?)$/i;
+  text = text.replace(/\s+(?:more|fewer)\s+(?:euros?|pounds?|dollars?|cents?)\s+than\s+(?:euros?|pounds?|dollars?|cents?)$/i, "").replace(units, "").trim();
+  text = text.replace(/^([A-Za-z][A-Za-z'-]*)\s+(?:wins|is the winner)$/i, "$1");
+  if (!text || /\b(?:or|but|not|maybe|approximately)\b/i.test(text)) return undefined;
+  // Reject prose and ambiguous answers rather than comparing every number.
+  if (/^[A-Za-z][A-Za-z'-]*$/.test(text)) return text;
+  if (/[\r\n]/.test(text)) return undefined;
+  const lexical = text.replace(/\\[A-Za-z]+/g, "").replace(/\s+/g, "");
+  if (/[A-Za-z]{2,}/.test(lexical) || /[^\dA-Za-z+\-*/^=.,{}()[\]_%|!°\\]/.test(lexical)) return undefined;
+  return text;
 }
 
 /** Balanced-brace parser; unlike the AFlow regex, nested fractions remain intact. */

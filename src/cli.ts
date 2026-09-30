@@ -277,7 +277,7 @@ function metricProfile(dataset: DatasetName): string {
     case "humaneval": return "docker-private-tests-pass-at-1-v1";
     case "mbpp": return "docker-private-tests-pass-at-1-v1";
     case "gsm8k": return "last-number-accuracy-v1";
-    case "math": return "aflow-symbolic-plus-balanced-normalized-v2";
+    case "math": return "aflow-symbolic-plus-declared-answer-normalized-v3";
   }
 }
 
@@ -287,7 +287,7 @@ function taskGoal(dataset: DatasetName): string {
     case "humaneval": return "Search a compact Ditto Node path that produces correct HumanEval Python functions under private tests.";
     case "mbpp": return "Search a compact Ditto Node path that produces correct MBPP Python functions under private tests.";
     case "gsm8k": return "Search a compact Ditto Node path that solves GSM8K word problems with correct final numbers.";
-    case "math": return "Search a compact Ditto Node path that maximizes the frozen AFlow MATH scorer on competition problems.";
+    case "math": return "Search a compact Ditto Node path that maximizes mathematical answer accuracy on competition problems.";
   }
 }
 
