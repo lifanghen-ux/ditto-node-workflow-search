@@ -13,6 +13,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test dist/test/*.test.js dist/benchmark/*.test.js",
     "check": "npm run typecheck && npm test",
+    "test:rounds": "node --env-file-if-exists=.env dist/round-test-runner.js",
     "search:drop": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset drop",
     "search:humaneval": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset humaneval",
     "search:mbpp": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset mbpp",

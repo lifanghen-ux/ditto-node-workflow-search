@@ -14,7 +14,7 @@ export function loadProviderSettings(env: NodeJS.ProcessEnv = process.env): Prov
   const model = env.CODE_SOUL_MODEL ?? "deepseek-flash";
   const apiKey = env.CODE_SOUL_API_KEY;
   if (!apiKey?.trim()) throw new Error("CODE_SOUL_API_KEY is required. Put it in an ignored .env file or the process environment.");
-  const concurrency = integer(env.CODE_SOUL_CONCURRENCY ?? "3", "CODE_SOUL_CONCURRENCY", 1, 64);
+  const concurrency = integer(env.CODE_SOUL_CONCURRENCY ?? "3", "CODE_SOUL_CONCURRENCY", 1, 4_096);
   const timeoutMs = integer(env.CODE_SOUL_TIMEOUT_MS ?? "600000", "CODE_SOUL_TIMEOUT_MS", 1_000, 30 * 60_000);
   const url = new URL(baseUrl);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
@@ -35,6 +35,10 @@ export interface ExperimentOptions {
   readonly repeats: number;
   readonly testRepeats: number;
   readonly evaluationConcurrency: number;
+  readonly searchConcurrency: number;
+  readonly testConcurrency: number;
+  readonly searchProviderConcurrency: number;
+  readonly testProviderConcurrency: number;
   readonly topK: number;
   readonly patience: number;
   readonly seed: number;
@@ -44,7 +48,8 @@ export interface ExperimentOptions {
 
 const FLAGS = new Set([
   "dataset", "data-dir", "run-dir", "output-root", "search-limit", "test-limit", "rounds", "repeats",
-  "test-repeats", "evaluation-concurrency", "top-k", "patience", "seed", "maximum-depth", "docker-image",
+  "test-repeats", "evaluation-concurrency", "search-concurrency", "test-concurrency",
+  "search-provider-concurrency", "test-provider-concurrency", "top-k", "patience", "seed", "maximum-depth", "docker-image",
 ]);
 
 export function parseArguments(argv: readonly string[], cwd = process.cwd()): ExperimentOptions {
@@ -67,6 +72,10 @@ export function parseArguments(argv: readonly string[], cwd = process.cwd()): Ex
   if (!isDataset(rawDataset)) throw new Error(`Unsupported dataset: ${rawDataset}`);
   const runDir = values.get("run-dir");
   if (rawCommand === "test" && !runDir) throw new Error("test requires --run-dir <completed search run>");
+  const searchConcurrency = integer(values.get("search-concurrency") ?? values.get("evaluation-concurrency")
+    ?? process.env.DITTO_SEARCH_CONCURRENCY ?? "3", "search-concurrency", 1, 4_096);
+  const testConcurrency = integer(values.get("test-concurrency") ?? values.get("evaluation-concurrency")
+    ?? process.env.DITTO_TEST_CONCURRENCY ?? "200", "test-concurrency", 1, 4_096);
   return Object.freeze({
     command: rawCommand,
     dataset: rawDataset,
@@ -78,7 +87,11 @@ export function parseArguments(argv: readonly string[], cwd = process.cwd()): Ex
     rounds: integer(values.get("rounds") ?? "20", "rounds", 1, 1_000),
     repeats: integer(values.get("repeats") ?? "5", "repeats", 1, 20),
     testRepeats: integer(values.get("test-repeats") ?? "3", "test-repeats", 1, 20),
-    evaluationConcurrency: integer(values.get("evaluation-concurrency") ?? "3", "evaluation-concurrency", 1, 64),
+    evaluationConcurrency: rawCommand === "search" ? searchConcurrency : testConcurrency,
+    searchConcurrency,
+    testConcurrency,
+    searchProviderConcurrency: integer(values.get("search-provider-concurrency") ?? String(searchConcurrency), "search-provider-concurrency", 1, 4_096),
+    testProviderConcurrency: integer(values.get("test-provider-concurrency") ?? String(testConcurrency), "test-provider-concurrency", 1, 4_096),
     topK: integer(values.get("top-k") ?? "4", "top-k", 1, 100),
     patience: integer(values.get("patience") ?? "5", "patience", 1, 100),
     seed: integer(values.get("seed") ?? "42", "seed", 0, 0x7fffffff),

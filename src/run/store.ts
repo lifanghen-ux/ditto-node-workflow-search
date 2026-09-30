@@ -9,6 +9,7 @@ import type {
   SearchTreeNode,
   WorkflowNodeSpec,
 } from "../domain.js";
+import { checkpointForPlan, publishCheckpoint } from "./checkpoints.js";
 
 export interface FrozenProgram {
   readonly leaf: SearchTreeNode;
@@ -53,6 +54,11 @@ export class RunStore {
 
   async appendEvent(value: Readonly<Record<string, unknown>>): Promise<void> {
     await appendJsonLine(join(this.directory, "search-events.jsonl"), value);
+  }
+
+  async saveCheckpoint(plan: AgentPlanSpec): Promise<void> {
+    const checkpoint = checkpointForPlan(plan, await this.readManifest());
+    await publishCheckpoint(join(this.directory, "checkpoints"), checkpoint);
   }
 
   async saveLiveCase(scope: string, result: CaseResult): Promise<void> {

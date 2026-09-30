@@ -13,7 +13,8 @@ import { GENERATION, PROTOCOL } from "./protocol.js";
 
 async function main(): Promise<void> {
   const options = parseArguments(process.argv.slice(2));
-  const provider = loadProviderSettings();
+  const provider = Object.freeze({ ...loadProviderSettings(),
+    concurrency: options.command === "search" ? options.searchProviderConcurrency : options.testProviderConcurrency });
   const experiment = createExperimentRuntime(provider);
   const executor = new WorkflowExecutor(experiment.runtime, experiment.providerName, experiment.model);
   try {
@@ -46,6 +47,7 @@ async function search(
     endpoint: provider.baseUrl,
     providerConcurrency: provider.concurrency,
     evaluationConcurrency: options.evaluationConcurrency,
+    independentRoundTests: { checkpointDirectory: "checkpoints", resultsUsedBySearch: false },
     generation: GENERATION,
     protocol: PROTOCOL,
     search: {
@@ -72,7 +74,10 @@ async function search(
   await store.writeManifest(manifest);
   console.log(JSON.stringify({ phase: "search-start", dataset: options.dataset, examples: loaded.tasks.length, runDirectory: store.directory }));
 
-  const evaluate = (plan: Parameters<WorkflowExecutor["run"]>[0]): Promise<EvaluationSummary> => {
+  const evaluate = async (plan: Parameters<WorkflowExecutor["run"]>[0]): Promise<EvaluationSummary> => {
+    // Publish locally before validation. A separate process consumes these
+    // files; no test score or test completion enters this search process.
+    await store.saveCheckpoint(plan);
     let scoreSum = 0;
     return loaded.evaluate(
       (task) => executor.run(plan, task),
