@@ -78,6 +78,19 @@ function Last-Activity([string[]]$Paths) {
   }
   return $latest
 }
+function Successful-ProviderActivity([string]$LogPath) {
+  $health = Read-Json "$LogPath.health.json"
+  if ($health) {
+    if ($health.lastSuccessAt) { return [DateTime]::Parse($health.lastSuccessAt).ToUniversalTime() }
+    return [DateTime]::Parse($health.startedAt).ToUniversalTime()
+  }
+  # Compatibility for older frozen snapshots without a health sidecar.
+  if (Test-Path -LiteralPath $LogPath) {
+    $lastResponse = Get-Content -LiteralPath $LogPath | Where-Object { $_.Contains('"phase": "response"') } | Select-Object -Last 1
+    if ($lastResponse) { return [DateTime]::Parse(($lastResponse | ConvertFrom-Json).at).ToUniversalTime() }
+  }
+  return Last-Activity @($LogPath)
+}
 function Remove-OwnScheduledTask {
   $registration = Read-Json (Join-Path $SessionDirectory "night-task.json")
   if (-not $registration -or -not $registration.registered) { return }
@@ -173,8 +186,14 @@ try {
       if ($searches.Count -gt 1) { throw "More than one matching search process: refusing to guess" }
       if ($searches.Count -eq 1) { $guard.searchPid = [int]$searches[0].ProcessId }
       $searchAlive = $searches.Count -eq 1
-      $searchStalled = $searchAlive -and -not $frozen -and
-        (([DateTime]::UtcNow - (Last-Activity @($guard.searchLog, $guard.searchProviderLog))).TotalMinutes -gt $StallMinutes)
+      $searchProviderHealth = Read-Json "$($guard.searchProviderLog).health.json"
+      $providerFailing = $searchProviderHealth -and $searchProviderHealth.lastFailureAt -and
+        (-not $searchProviderHealth.lastSuccessAt -or
+         [DateTime]::Parse($searchProviderHealth.lastFailureAt) -gt [DateTime]::Parse($searchProviderHealth.lastSuccessAt))
+      $noSearchActivity = (([DateTime]::UtcNow - (Last-Activity @($guard.searchLog, $guard.searchProviderLog))).TotalMinutes -gt $StallMinutes)
+      $noProviderSuccess = $providerFailing -and
+        (([DateTime]::UtcNow - (Successful-ProviderActivity $guard.searchProviderLog)).TotalMinutes -gt 15)
+      $searchStalled = $searchAlive -and -not $frozen -and ($noSearchActivity -or $noProviderSuccess)
       if (-not $frozen -and (-not $searchAlive -or $searchStalled)) {
         if ($guard.searchRestarts -ge $MaximumRecoveries) {
           $guard.phase = "needs-attention"; Save-Guard
@@ -225,8 +244,13 @@ try {
       if ($testProcesses.Count -eq 1) { $guard.testPid = [int]$testProcesses[0].ProcessId }
       $testAlive = $testProcesses.Count -eq 1
       $testStatus = Read-Json (Join-Path $guard.testDirectory "status.json")
+      $testProviderLog = Join-Path $guard.testDirectory "provider.jsonl"
+      $testHealth = Read-Json "$testProviderLog.health.json"
+      $testProviderFailing = $testHealth -and $testHealth.lastFailureAt -and
+        (-not $testHealth.lastSuccessAt -or [DateTime]::Parse($testHealth.lastFailureAt) -gt [DateTime]::Parse($testHealth.lastSuccessAt))
       $testStalled = $testAlive -and $testStatus -and $testStatus.pending -gt 0 -and
-        (([DateTime]::UtcNow - (Last-Activity @($guard.testLog, (Join-Path $guard.testDirectory "provider.jsonl")))).TotalMinutes -gt $StallMinutes)
+        ((([DateTime]::UtcNow - (Last-Activity @($guard.testLog, $testProviderLog))).TotalMinutes -gt $StallMinutes) -or
+         ($testProviderFailing -and ([DateTime]::UtcNow - (Successful-ProviderActivity $testProviderLog)).TotalMinutes -gt 15))
       Save-Guard
       $reportText = & $Node (Join-Path $DittoRoot "scripts/night_report.mjs") $SessionDirectory $guard.searchRun $guard.testDirectory $GuardPath
       if ($LASTEXITCODE -ne 0) { throw "Result aggregation failed" }

@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { renameArtifact } from "./atomic.js";
 import { dirname, join, resolve } from "node:path";
 import type {
   AgentPlanSpec,
@@ -140,7 +141,7 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.${randomBytes(3).toString("hex")}.tmp`;
   await writeFile(temporary, `${JSON.stringify(value, jsonNumberReplacer, 2)}\n`, "utf8");
-  await rename(temporary, path);
+  await renameArtifact(temporary, path);
 }
 
 async function writeJsonLines(path: string, values: readonly unknown[]): Promise<void> {

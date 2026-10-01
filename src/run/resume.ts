@@ -41,13 +41,22 @@ export async function loadHistoricalResume(directory: string, round: number): Pr
   const allExperiences = await jsonLines<SearchExperience>(join(directory, "experiences.jsonl"));
   const root = records.get("search-000");
   if (!root) throw new Error("Historical search has no root");
-  const tree = new Map<string, SearchTreeNode>([[root.id, createSearchTreeNode(root.id, null, 0, root.node, [root.node])]]);
-  const experiences: SearchExperience[] = [];
-  const history: Array<Pick<EvaluationSummary, "score" | "standardDeviation">> = [];
+  // A resumed run publishes its inherited vertices/evaluations, but not a
+  // duplicate prefix of baseline/selection events. Restore that prefix from
+  // its declared source before replaying this run's subsequent rounds.
+  const provenance = manifest.resumedFrom as { directory: string; completedSearchRounds: number } | undefined;
+  const inherited = provenance && provenance.completedSearchRounds < round
+    ? (await loadHistoricalResume(provenance.directory, provenance.completedSearchRounds)).state : undefined;
+  const tree = inherited
+    ? new Map(inherited.nodes.map(node => [node.id, node]))
+    : new Map<string, SearchTreeNode>([[root.id, createSearchTreeNode(root.id, null, 0, root.node, [root.node])]]);
+  const experiences: SearchExperience[] = [...(inherited?.experiences ?? [])];
+  const history: Array<Pick<EvaluationSummary, "score" | "standardDeviation">> = [...(inherited?.evaluationHistory ?? [])];
   const random = new SeededRandom(settings.seed);
-  let bestLeafId = "";
+  if (inherited) random.restore(inherited.randomState);
+  let bestLeafId = inherited?.bestLeafId ?? "";
   let expectedParent: string | undefined;
-  let completedRounds = 0;
+  let completedRounds = inherited?.completedRounds ?? 0;
   for (const event of events.slice(0, cutoff + 1)) {
     if (event.type === "parent-selected") {
       const frontier = [...tree.values()].filter(node => node.evaluation && node.depth < settings.maximumDepth);

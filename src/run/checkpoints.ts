@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { renameArtifact } from "./atomic.js";
 import { dirname, join } from "node:path";
 import type { AgentPlanSpec, DatasetName, WorkflowNodeSpec } from "../domain.js";
 import { DATASETS } from "../domain.js";
@@ -45,7 +46,7 @@ export async function writeArtifact(path: string, value: unknown): Promise<void>
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
   await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  await rename(temporary, path);
+  await renameArtifact(temporary, path);
 }
 
 export async function publishCheckpoint(directory: string, checkpoint: WorkflowCheckpoint): Promise<void> {
