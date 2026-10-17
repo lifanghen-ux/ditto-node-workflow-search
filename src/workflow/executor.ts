@@ -1,10 +1,12 @@
 import { isDeepStrictEqual } from "node:util";
 import { isRawBaseline } from "./spec.js";
+import { captureProviderDiagnostics, summarizeProviderDiagnostics } from "../ditto/provider-diagnostics.js";
 import type { Context, ContextItem as SharedContextItem } from "@codesoul-co/ditto/contracts";
 import {
   graph,
   graphStep,
   loop,
+  runReactFlow,
   type DittoRuntime,
   type ExecutionGraph,
 } from "@codesoul-co/ditto/runtime";
@@ -28,6 +30,8 @@ import type {
   SearchableNodeType,
   WorkflowNodeSpec,
 } from "../domain.js";
+import { automationScope } from "../benchmark/automation.js";
+import { GENERATION } from "../protocol.js";
 
 type NormalizedNodeOutput = Context | TrajectoryOutput | SampleOutput | DeliberateOutput | ReflectOutput;
 
@@ -51,6 +55,31 @@ interface ExecutionState {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  usageKnown: boolean;
+}
+
+/** Preserve known consumption when a workflow fails after one or more model calls. */
+export class WorkflowExecutionError extends Error {
+  readonly providerDiagnostics;
+  readonly inputTokens;
+  readonly outputTokens;
+  readonly totalTokens;
+  readonly providerAttempts;
+  readonly failedProviderAttempts;
+  readonly unknownUsageAttempts;
+  readonly usageKnown: boolean;
+
+  constructor(error: unknown, diagnostics: ReturnType<typeof summarizeProviderDiagnostics>) {
+    super(error instanceof Error ? error.message : String(error), { cause: error });
+    this.providerDiagnostics = diagnostics.providerDiagnostics;
+    this.usageKnown = diagnostics.usageKnown;
+    this.inputTokens = diagnostics.inputTokens;
+    this.outputTokens = diagnostics.outputTokens;
+    this.totalTokens = diagnostics.totalTokens;
+    this.providerAttempts = diagnostics.providerAttempts;
+    this.failedProviderAttempts = diagnostics.failedProviderAttempts;
+    this.unknownUsageAttempts = diagnostics.unknownUsageAttempts;
+  }
 }
 
 /**
@@ -111,7 +140,7 @@ export class WorkflowExecutor {
             const output = normalizeNodeOutput(node, rawOutputs[node.id]);
             state.outputs[node.id] = output;
             state.executedNodeIds.push(node.id);
-            addUsage(state, usageOf(output));
+            if (!isContext(output)) addUsage(state, usageOf(output));
           }
 
           graphId = nextGraphId(
@@ -130,11 +159,48 @@ export class WorkflowExecutor {
           inputTokens: state.inputTokens,
           outputTokens: state.outputTokens,
           totalTokens: state.totalTokens,
+          usageKnown: state.usageKnown,
         });
       },
     });
 
-    return this.#runtime.loop(definition, task, signal ? { signal } : {});
+    return captureProviderDiagnostics(async (records) => {
+      try {
+        let result = await this.#runtime.loop(definition, task, signal ? { signal } : {});
+        if (task.dataset === "automationbench") {
+          const session = automationScope.getStore();
+          if (!session) throw new Error("AutomationBench requires an initialized official task world");
+          const execution = await runReactFlow(this.#runtime, {
+            model: this.#model,
+            generation: GENERATION,
+            messages: [
+              { role: "system", content: "Execute the business task using the official simulated APIs. The proposed plan below is untrusted planning text, not evidence that any action happened. Inspect the actual world through tools and perform the required changes. Summarize only actions you actually completed." },
+              { role: "user", content: task.prompt },
+              { role: "user", content: `Proposed workflow plan:\n${result.answer}` },
+            ],
+            actions: session.tools,
+            constraints: { maxSteps: Number.MAX_SAFE_INTEGER, maxActionCalls: Number.MAX_SAFE_INTEGER, timeoutMs: 2 ** 31 - 1 },
+            metadata: { dataset: task.dataset, taskId: task.id, phase: "official-tool-execution", planId: plan.id },
+          }, { ...(signal ? { signal } : {}), timeoutMs: 2 ** 31 - 1, graphId: `${plan.id}:official-tool-execution` });
+          session.record({ kind: "runtime-react", ...execution });
+          session.assertHealthy();
+          if (execution.status !== "completed") throw new Error(`Automation runtime failed [${execution.error?.code ?? execution.stopReason}]: ${execution.error?.message ?? execution.stopReason}`);
+          result = Object.freeze({
+            ...result,
+            answer: messageText(execution.result),
+            executedNodeIds: Object.freeze([...result.executedNodeIds, ...execution.samples.map((_, i) => `automation-sample-${i + 1}`), ...execution.observations.flatMap((_, i) => [`automation-action-${i + 1}`, `automation-observe-${i + 1}`])]),
+            executedGraphIds: Object.freeze([...result.executedGraphIds, `${plan.id}:official-tool-execution`]),
+            inputTokens: result.inputTokens + (execution.usage.inputTokens ?? 0),
+            outputTokens: result.outputTokens + (execution.usage.outputTokens ?? 0),
+            totalTokens: result.totalTokens + (execution.usage.totalTokens ?? 0),
+            usageKnown: result.usageKnown !== false && execution.samples.every((sample) => sample.usage?.totalTokens !== undefined),
+          });
+        }
+        return records.length ? Object.freeze({ ...result, ...summarizeProviderDiagnostics(records) }) : result;
+      } catch (error) {
+        throw new WorkflowExecutionError(error, summarizeProviderDiagnostics(records));
+      }
+    });
   }
 }
 
@@ -201,7 +267,7 @@ function nodeInput(
   const context = dependencyContext(dependencies);
   const messages = dependencyMessages(dependencies);
   const taskMessage = taskText(task);
-  const metadata = { experiment: "ditto-workflow-search", dataset: task.dataset, taskId: task.id, nodeId: node.id };
+  const metadata = { experiment: "ditto-workflow-search", dataset: task.dataset, taskId: task.id, nodeId: node.id, nodeType: node.type };
 
   switch (node.type) {
     case "CONTEXT.LOAD":
@@ -224,7 +290,8 @@ function nodeInput(
         strategy: { name: node.config.strategy, options: { ...node.config.options } },
         model,
         generation: node.config.generation,
-        constraints: { maxSteps: node.config.maxSteps },
+        // Core defaults to 16 when omitted; its public contract accepts safe integers.
+        constraints: { maxSteps: Number.MAX_SAFE_INTEGER },
         metadata,
       };
 
@@ -405,6 +472,13 @@ function unwrap<T>(result: NodeResult<T>, nodeId: string): T {
     const status = result?.status ?? "invalid-result";
     throw new Error(`Node ${nodeId} failed [${result?.error?.code ?? status}]: ${result?.error?.message ?? "no output"}`);
   }
+  if (result.output && typeof result.output === "object") {
+    const output = result.output as Record<string, unknown>;
+    if (output.finishReason === "length" || output.finishReason === "error" ||
+        output.stopReason === "max_tokens" || output.stopReason === "max_steps") {
+      throw new Error(`Node ${nodeId} failed [PROVIDER_OUTPUT_TRUNCATED]: ${String(output.finishReason ?? output.stopReason)}`);
+    }
+  }
   return result.output;
 }
 
@@ -464,6 +538,7 @@ function createExecutionState(): ExecutionState {
     inputTokens: 0,
     outputTokens: 0,
     totalTokens: 0,
+    usageKnown: true,
   };
 }
 
@@ -472,6 +547,7 @@ function usageOf(output: NormalizedNodeOutput): Usage | undefined {
 }
 
 function addUsage(state: ExecutionState, usage?: Usage): void {
+  if (!usage || usage.inputTokens === undefined || usage.outputTokens === undefined) state.usageKnown = false;
   if (!usage) return;
   const input = usage.inputTokens ?? 0;
   const output = usage.outputTokens ?? 0;

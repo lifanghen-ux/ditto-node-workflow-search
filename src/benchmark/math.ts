@@ -1,10 +1,13 @@
 import { join } from "node:path";
 import type { BenchmarkTask } from "../domain.js";
 import { evaluateTasks } from "./evaluator.js";
-import { AFlowMathScorer } from "./aflow-math-scorer.js";
+import { MFlowMathScorer } from "./mflow-math-scorer.js";
 import { readJsonLines, requireRecord, requireString, stableId } from "./io.js";
 import { stratifiedSample } from "./sampling.js";
 import type { BenchmarkAdapter, BenchmarkEvaluationOptions, BenchmarkLoadOptions, BenchmarkRunner, LoadedBenchmark } from "./types.js";
+
+// Common, answer-independent termination guidance validated after observed output loops.
+export const MATH_TERMINATION_GUIDANCE = "Solve the problem directly. Present each calculation or case only once. Do not add self-checks, alternative interpretations, or repeated verification after completing the solution. End with the final answer.";
 
 interface MathRow {
   readonly task: BenchmarkTask;
@@ -25,10 +28,9 @@ export const mathAdapter: BenchmarkAdapter = Object.freeze({
         task: Object.freeze({
           id: `math:${options.split}:${row}:${stableId("problem", prompt).slice(-16)}`,
           dataset: "math",
-          prompt,
-          // AFlow's initial MATH workflow supplies the raw problem with no
-          // additional answer-format instruction. Its scorer handles boxed and
-          // final-sentence answers, so Ditto must not receive a stricter prompt.
+          // IDs and frozen data retain the original problem bytes. All candidate
+          // Nodes receive the same guidance; this is a repaired prompt protocol.
+          prompt: `${MATH_TERMINATION_GUIDANCE}\n\n${prompt}`,
           outputInstruction: "",
           metadata: Object.freeze({ split: options.split, level, type }),
         }),
@@ -48,13 +50,9 @@ function loadedMath(split: "validate" | "test", rows: readonly MathRow[]): Loade
     split,
     tasks,
     async evaluate(runner: BenchmarkRunner, options?: BenchmarkEvaluationOptions) {
-      const scorer = new AFlowMathScorer(references);
-      try {
-        await scorer.preflight();
-        return await evaluateTasks(tasks, scorer, runner, options);
-      } finally {
-        await scorer.close();
-      }
+      const scorer = new MFlowMathScorer(references);
+      await scorer.preflight();
+      return evaluateTasks(tasks, scorer, runner, options);
     },
   });
 }

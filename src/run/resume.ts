@@ -17,10 +17,13 @@ async function jsonLines<T>(path: string): Promise<T[]> {
  * Parent-selection draws and backpropagation use the existing implementations.
  * Test directories are never consulted by this importer.
  */
-export async function loadHistoricalResume(directory: string, round: number): Promise<{
+export async function loadHistoricalResume(directory: string, round: number, codeSha256: string): Promise<{
   readonly manifest: Record<string, unknown>; readonly state: SearchResumeState;
 }> {
   const manifest = JSON.parse(await readFile(join(directory, "manifest.json"), "utf8")) as Record<string, unknown>;
+  if (!codeSha256 || manifest.evaluationCodeSha256 !== codeSha256) {
+    throw new Error("Resume evaluation code hash is missing or differs from the current source");
+  }
   // New runs publish an atomic state after every completed search boundary.
   // Hydrate raw validation answers from their own immutable evaluations;
   // compact state files intentionally omit these potentially large arrays.
@@ -46,7 +49,7 @@ export async function loadHistoricalResume(directory: string, round: number): Pr
   // its declared source before replaying this run's subsequent rounds.
   const provenance = manifest.resumedFrom as { directory: string; completedSearchRounds: number } | undefined;
   const inherited = provenance && provenance.completedSearchRounds < round
-    ? (await loadHistoricalResume(provenance.directory, provenance.completedSearchRounds)).state : undefined;
+    ? (await loadHistoricalResume(provenance.directory, provenance.completedSearchRounds, codeSha256)).state : undefined;
   const tree = inherited
     ? new Map(inherited.nodes.map(node => [node.id, node]))
     : new Map<string, SearchTreeNode>([[root.id, createSearchTreeNode(root.id, null, 0, root.node, [root.node])]]);

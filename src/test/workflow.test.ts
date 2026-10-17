@@ -31,7 +31,7 @@ test("construction order does not create runtime dependencies", () => {
     type: "INFER.REASONING.DELIBERATE",
     graphId: "solve",
     dependencies: [solverA.id, solverB.id],
-    config: { mode: "select", generation: { temperature: 0.1, maxTokens: 1024 } },
+    config: { mode: "select", generation: { temperature: 0, maxTokens: 393_216 } },
   };
   const nodes: readonly WorkflowNodeSpec[] = [createRootNode(), solverA, solverB, deliberate];
   validateNodePath(nodes);

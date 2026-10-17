@@ -6,6 +6,7 @@ export function backpropagateEvaluation(
   leafId: string,
   evaluation: EvaluationSummary,
 ): readonly SearchTreeNode[] {
+  assertValidEvaluation(evaluation);
   const updated: SearchTreeNode[] = [];
   const visited = new Set<string>();
   let cursorId: string | null = leafId;
@@ -39,6 +40,13 @@ export function backpropagateEvaluation(
   }
 
   return Object.freeze(updated);
+}
+
+/** Legacy summaries are accepted only when they contain no failed runs. */
+export function assertValidEvaluation(evaluation: EvaluationSummary): void {
+  if (evaluation.valid === false || evaluation.failedRuns !== 0 || !Number.isFinite(evaluation.score)) {
+    throw new Error("Invalid evaluation cannot be used as search feedback");
+  }
 }
 
 export function emptyStatistics(): SearchTreeNode["statistics"] {

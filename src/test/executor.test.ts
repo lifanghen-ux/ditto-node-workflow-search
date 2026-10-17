@@ -8,7 +8,7 @@ import { WorkflowExecutor } from "../workflow/executor.js";
 import { createInitialTrajectoryNode, createInitialSampleNode, createRootNode, materializeAgentPlan } from "../workflow/spec.js";
 import { GENERATION } from "../protocol.js";
 
-test("empty-instruction MATH baseline sends exactly AFlow's raw problem in one call", async () => {
+test("empty-instruction baseline forwards the adapter prompt unchanged in one call", async () => {
   let calls = 0;
   const runtime = createDitto({ workers: [createContextWorker(), createInferWorker({ defaultProvider: "fixture", providers: {
     fixture: { async invoke(input) {
@@ -57,7 +57,7 @@ test("Loop repeat reuses a Graph definition and evaluates the newest output", as
       type: "INFER.REASONING.SAMPLE",
       graphId: "refine",
       dependencies: [],
-      config: { role: "finalizer", instruction: "Return done when ready.", generation: { temperature: 0, maxTokens: 128 } },
+      config: { role: "finalizer", instruction: "Return done when ready.", generation: { temperature: 0, maxTokens: 393_216 } },
     };
     const nodes: readonly WorkflowNodeSpec[] = [createRootNode(), createInitialTrajectoryNode(), finalizer];
     const base = materializeAgentPlan("leaf", nodes);
@@ -95,7 +95,7 @@ test("Loop switch chooses a Graph from normalized prior output", async () => {
       type: "INFER.REASONING.SAMPLE",
       graphId: "refine",
       dependencies: [],
-      config: { role: "finalizer", instruction: "Unused branch", generation: { temperature: 0, maxTokens: 128 } },
+      config: { role: "finalizer", instruction: "Unused branch", generation: { temperature: 0, maxTokens: 393_216 } },
     };
     const nodes: readonly WorkflowNodeSpec[] = [createRootNode(), createInitialTrajectoryNode(), unused];
     const base = materializeAgentPlan("leaf", nodes);
@@ -134,7 +134,7 @@ test("a verify-only REFLECT preserves the preceding Graph's answer", async () =>
       type: "INFER.REASONING.REFLECT",
       graphId: "refine",
       dependencies: [],
-      config: { mode: "verify", criteria: ["correctness"], generation: { temperature: 0, maxTokens: 128 } },
+      config: { mode: "verify", criteria: ["correctness"], generation: { temperature: 0, maxTokens: 393_216 } },
     };
     const plan = materializeAgentPlan("leaf", [createRootNode(), createInitialTrajectoryNode(), reflect]);
     const result = await fixture.executor.run(plan, task);
@@ -164,3 +164,36 @@ function createFixture(answer: (nodeId: string) => string): { executor: Workflow
     close: () => runtime.close(),
   };
 }
+
+test("trajectory execution completes beyond the Core default sixteen calls", async () => {
+  let calls = 0;
+  const provider: ModelProvider = { async invoke(input) {
+    calls++;
+    const isDecision = String(input.messages[0]?.content).startsWith("Compare the supplied candidates");
+    let content = "2";
+    if (isDecision) {
+      const data = JSON.parse(String(input.messages[1]?.content)) as { candidates: { id: string }[]; selectCount: number };
+      content = JSON.stringify({ result: { role: "assistant", content: "2" }, selectedCandidateIds: data.candidates.slice(0, data.selectCount).map((item) => item.id) });
+    }
+    return { message: { role: "assistant", content }, finishReason: "stop" };
+  } };
+  const runtime = createDitto({ workers: [createContextWorker(), createInferWorker({ providers: { fixture: provider }, defaultProvider: "fixture" })] });
+  try {
+    const node = createInitialTrajectoryNode();
+    const plan = materializeAgentPlan("large-trajectory", [createRootNode(), { ...node, config: { ...node.config, strategy: "tot", options: { breadth: 4, depth: 2, beamWidth: 4 } } }]);
+    const result = await new WorkflowExecutor(runtime, "fixture", "fixture").run(plan, task);
+    assert.equal(result.answer, "2");
+    assert.equal(calls, 22);
+  } finally { await runtime.close(); }
+});
+
+test("SAMPLE and TRAJECTORY length truncation cannot become scored answers", async () => {
+  const provider: ModelProvider = { async invoke() { return { message: { role: "assistant", content: "2" }, finishReason: "length", usage: { totalTokens: 3 } }; } };
+  const runtime = createDitto({ workers: [createContextWorker(), createInferWorker({ providers: { fixture: provider }, defaultProvider: "fixture" })] });
+  try {
+    for (const node of [createInitialSampleNode(), createInitialTrajectoryNode()]) {
+      const plan = materializeAgentPlan("length", [createRootNode(), node]);
+      await assert.rejects(new WorkflowExecutor(runtime, "fixture", "fixture").run(plan, task), /PROVIDER_OUTPUT_TRUNCATED|max_tokens/);
+    }
+  } finally { await runtime.close(); }
+});

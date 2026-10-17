@@ -18,7 +18,7 @@ const initialSpec = createInitialSampleNode();
 const baselinePlan = materializeAgentPlan("search-001", [rootSpec, initialSpec]);
 const baseline = checkpointForPlan(baselinePlan, manifest);
 const extra = instantiateProposal({ type: "INFER.REASONING.SAMPLE", graphId: "refine", dependencies: [],
-  config: { role: "finalizer", instruction: "Check the result", generation: { temperature: 0.2, maxTokens: 16_384 } } }, "sample-2");
+  config: { role: "finalizer", instruction: "Check the result", generation: { temperature: 0, maxTokens: 393_216 } } }, "sample-2");
 const candidate = checkpointForPlan(materializeAgentPlan("search-002", [rootSpec, initialSpec, extra]), manifest);
 
 function summary(score: number): EvaluationSummary {
@@ -127,5 +127,67 @@ test("a failed independent test does not stop another workflow or modify its che
     assert.equal(runner.jobs[0]!.status, "failed");
     assert.equal(runner.jobs[1]!.status, "complete");
     assert.equal(baseline.planHash, checkpointForPlan(baselinePlan, manifest).planHash);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("invalid independent evaluations retain evidence and retry after restart instead of completing at zero", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ditto-test-invalid-"));
+  const settings = { outputDirectory: directory, workflowConcurrency: 1, sampleConcurrency: 1,
+    providerConcurrency: 1, testDataHash: "fixed", testRepeats: 1 };
+  try {
+    const invalid: EvaluationSummary = { ...summary(0), valid: false, failedRuns: 1, successfulRuns: 0,
+      results: [{ ...summary(0).results[0]!, valid: false, error: "HTTP 402", failureKind: "provider" }] };
+    const runner = new IndependentRoundTests(settings, async () => invalid);
+    await runner.enqueue(baseline); await runner.drain();
+    assert.equal(runner.jobs[0]!.status, "failed");
+    assert.equal(runner.jobs[0]!.score, undefined);
+    assert.equal(runner.jobs[0]!.legacyScore, undefined);
+    const saved = JSON.parse(await readFile(join(directory, baseline.searchNodeId, "attempt-1", "summary.json"), "utf8"));
+    assert.equal(saved.valid, false);
+    assert.equal(JSON.parse(await readFile(join(directory, baseline.searchNodeId, "attempt-1", "samples.json"), "utf8"))[0].error, "HTTP 402");
+    let calls = 0;
+    const restarted = new IndependentRoundTests(settings, async () => { calls++; return { ...summary(0), valid: true }; });
+    await restarted.enqueue(baseline); await restarted.drain();
+    assert.equal(calls, 1); assert.equal(restarted.jobs[0]!.attempt, 2);
+    assert.equal(restarted.jobs[0]!.status, "complete"); assert.equal(restarted.jobs[0]!.score, 0);
+    const completed = new IndependentRoundTests(settings, async () => { throw new Error("valid zero must be reused"); });
+    await completed.enqueue(baseline); await completed.drain();
+    assert.equal(completed.jobs[0]!.status, "complete"); assert.equal(completed.jobs[0]!.attempt, 2);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("legacy complete jobs are checked against saved evaluation validity before skipping", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ditto-test-legacy-invalid-"));
+  const settings = { outputDirectory: directory, workflowConcurrency: 1, sampleConcurrency: 1,
+    providerConcurrency: 1, testDataHash: "fixed", testRepeats: 1 };
+  try {
+    const original = new IndependentRoundTests(settings, async () => summary(0));
+    await original.enqueue(baseline); await original.drain();
+    const attempt = join(directory, baseline.searchNodeId, "attempt-1");
+    // Reproduce the old complete/zero artifact despite invalid underlying evaluation.
+    await writeFile(join(attempt, "summary.json"), JSON.stringify({ ...summary(0), valid: false }));
+    let calls = 0;
+    const restarted = new IndependentRoundTests(settings, async () => { calls++; return summary(1); });
+    await restarted.enqueue(baseline); await restarted.drain();
+    assert.equal(calls, 1); assert.equal(restarted.jobs[0]!.attempt, 2);
+    assert.equal(restarted.jobs[0]!.score, 1);
+    assert.equal(JSON.parse(await readFile(join(attempt, "job.json"), "utf8")).status, "complete");
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("independent completion rejects inconsistent failed or incomplete sample evidence", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ditto-test-inconsistent-"));
+  try {
+    for (const [label, results] of [
+      ["failed-case", [{ ...summary(0).results[0]!, valid: false, error: "scorer failed" }]],
+      ["missing-case", []],
+    ] as const) {
+      const runner = new IndependentRoundTests({ outputDirectory: join(directory, label), workflowConcurrency: 1,
+        sampleConcurrency: 1, providerConcurrency: 1, testDataHash: "fixed", testRepeats: 1 },
+      async () => ({ ...summary(0), valid: true, results }));
+      await runner.enqueue(baseline); await runner.drain();
+      assert.equal(runner.jobs[0]!.status, "failed");
+      assert.equal(runner.jobs[0]!.score, undefined);
+    }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

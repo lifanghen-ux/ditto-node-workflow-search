@@ -12,8 +12,8 @@ export interface ProviderSettings {
 export function loadProviderSettings(env: NodeJS.ProcessEnv = process.env): ProviderSettings {
   const baseUrl = env.CODE_SOUL_BASE_URL ?? "https://api.deepseek.com";
   const model = env.CODE_SOUL_MODEL ?? "deepseek-flash";
-  const apiKey = env.CODE_SOUL_API_KEY;
-  if (!apiKey?.trim()) throw new Error("CODE_SOUL_API_KEY is required. Put it in an ignored .env file or the process environment.");
+  const apiKey = env.CODE_SOUL_API_KEY ?? env.DS_API_KEY;
+  if (!apiKey?.trim()) throw new Error("DS_API_KEY is required (or CODE_SOUL_API_KEY for a generic provider override).");
   const concurrency = integer(env.CODE_SOUL_CONCURRENCY ?? "3", "CODE_SOUL_CONCURRENCY", 1, 4_096);
   const timeoutMs = integer(env.CODE_SOUL_TIMEOUT_MS ?? "600000", "CODE_SOUL_TIMEOUT_MS", 1_000, 30 * 60_000);
   const url = new URL(baseUrl);

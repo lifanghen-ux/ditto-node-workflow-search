@@ -4,6 +4,8 @@
 
 > Experimental / not Ditto Core. 当前仓库保持 `private: true`，表示禁止误发 npm；GitHub 仓库本身可以公开审查。
 
+MATH 与 AutomationBench 的当前工程验证协议、环境准备、故障处理及保留 test 的运行命令见 [Engineering validation](docs/engineering-validation.md)。下文未显式覆盖的历史批量脚本不属于本轮运行入口。
+
 ## 核心定义
 
 负责人提出的关系在代码中被严格拆成三层：
@@ -54,13 +56,14 @@ Loop: prepare → solve → refine → 结束 / 有界重复 / 条件切换
 | HumanEval | 33 / 131 | pass@1 | 生成代码只在隔离 Docker 中运行 |
 | MBPP | 86 / 341 | pass@1 | 生成代码只在隔离 Docker 中运行 |
 | GSM8K | 264 / 1055 | 最后一个数字准确率 | 容差 `1e-6` |
-| MATH | 119 / 486 | AFlow symbolic + balanced normalized | 这是 AFlow 的 Level-5 精选 split，不是完整 MATH |
+| MATH | 119 / 486 | MFlow math-verify 0.9.0 | 这是 AFlow 的 Level-5 精选 split，不是完整 MATH |
+| AutomationBench | 200 / 600 | official final-world assertions | public simple search；每次尝试使用新世界 |
 
 原始数据不在仓库内。预期文件与隐私边界见 [`data/README.md`](data/README.md)。题面会进入 `BenchmarkTask`，标准答案、参考代码和隐藏测试只保留在 adapter 的私有闭包中。
 
 ## 安装与配置
 
-要求 Node.js 24+、npm 11+。MATH 的 AFlow 等价评分器还需要 Python、`regex`、SymPy 与 ANTLR runtime；HumanEval/MBPP 另要求已启动 Docker daemon，并提前拉取 Python 镜像。
+要求 Node.js 24+、npm 11+。模型桥接和 MATH 评分使用独立 Python 环境及 `requirements.txt`；AutomationBench 使用官方锁定环境。HumanEval/MBPP 另要求已启动 Docker daemon，并提前拉取 Python 镜像。
 
 ```bash
 npm ci
@@ -72,13 +75,14 @@ cp .env.example .env
 ```dotenv
 CODE_SOUL_BASE_URL=https://api.deepseek.com
 CODE_SOUL_MODEL=deepseek-flash
-CODE_SOUL_API_KEY=replace-locally
+DS_API_KEY=replace-locally
 CODE_SOUL_CONCURRENCY=3
 CODE_SOUL_TIMEOUT_MS=600000
-AFLOW_SCORER_PYTHON=python
+DITTO_PROVIDER_PYTHON=python
+MATH_SCORER_PYTHON=python
 ```
 
-所有优化调用、样本并发、多个 solver 和 `TRAJECTORY` 内部调用共用同一个 3 路 semaphore，不会各自放大为 3 路。
+所有优化调用、样本并发、格式修复、工具执行模型和 `TRAJECTORY` 内部调用共用请求 semaphore，不会各自放大并发。
 
 ## 离线验证
 
@@ -156,11 +160,11 @@ runs/<dataset>/<run-id>/
 
 manifest 记录 Ditto 版本、模型名、非敏感 endpoint、数据文件哈希、抽样 ID、搜索设置和评分版本，不记录 API Key 或授权头。`runs/` 默认不进入 Git。
 
-为贴合 AFlow/OpenAI SDK 行为，瞬时 Provider 故障最多发起 3 次 HTTP 尝试，完整工作流对任意异常最多执行 5 次、间隔 1 秒；最终仍失败时，汇总通过 `timeoutRuns` 与 `wrongRuns` 区分基础设施超时和正常完成但答错。
+瞬时 Provider 故障最多发起 3 次 HTTP 尝试，工作流仅对瞬时故障有限重试。认证、余额、参数及未修复的程序或评分错误使评估无效；完整有效评估才进入优化器。失败和未知消耗保留，不删题或改变分母。格式修复和恢复细节见工程验证说明。
 
 ## 当前限制
 
-- MATH 首先调用冻结的 AFlow Python/SymPy scorer；若其判 0，再以平衡 `boxed` 提取和保守的格式归一化复核。产物同时记录旧分数、是否回退及等价类型，减少嵌套分数、矩阵、单位和角度符号造成的误判，而不覆盖真正的数学错误。
+- MATH 当前固定 MFlow `math-verify 0.9.0` 判分，不再使用归一化补判。旧 AFlow/SymPy 与补判代码仅供同答案离线对照；分歧须记录，不把评分器切换当作模型提升。
 - OpenAI Python SDK 会把部分缺失的可选字段实体化为 `null`；传入 Ditto 前会恢复为省略字段的 wire shape，避免把 `tool_calls: null` 误判为非法模型输出。
 - 首版固定 `prepare / solve / refine` Graph 边界，执行器已经支持 `next / repeat / switch`；后续可在受控 allowlist 中开放更多 Loop policy 搜索。
 - Ditto npm 包的 Contract 目前主要是 TypeScript 编译期类型，没有运行时可枚举 JSON Schema；本仓库因此维护最小可信 Node proposal 校验层，没有修改上游包。

@@ -17,9 +17,9 @@ import {
   pathFingerprint,
   validateNodePath,
 } from "../workflow/spec.js";
-import { backpropagateEvaluation } from "./backprop.js";
+import { assertValidEvaluation, backpropagateEvaluation } from "./backprop.js";
 import { checkAFlowConvergence } from "./convergence.js";
-import { ProposalValidationError, type NextNodeProposer } from "./proposer.js";
+import { ProposalValidationError, type NextNodeProposer, type ProposalRejection } from "./proposer.js";
 import { SeededRandom } from "./random.js";
 import { compareRunnableLeaves, selectParent } from "./selector.js";
 import { assertOneNodePerTreeEntry, nodePathTo, pathTo, validateSearchPathSemantics } from "./tree.js";
@@ -126,6 +126,7 @@ export class NodeWorkflowSearch {
       if (saved.schemaVersion !== 1 || saved.completedRounds > this.#rounds) throw new Error("Invalid search resume state");
       for (const node of saved.nodes) { tree.set(node.id, node); seenPaths.add(node.pathHash); }
       assertOneNodePerTreeEntry(tree);
+      for (const node of tree.values()) if (node.evaluation) assertValidEvaluation(node.evaluation);
       experiences.push(...saved.experiences);
       this.#random.restore(saved.randomState);
       completedRounds = saved.completedRounds;
@@ -164,6 +165,10 @@ export class NodeWorkflowSearch {
     seenPaths.add(initial.pathHash);
     const initialPlan = materializeAgentPlan(initial.id, initialPath);
     const initialEvaluation = await this.#evaluate(initialPlan);
+    if (initialEvaluation.valid === false || initialEvaluation.failedRuns > 0) {
+      await this.#callbacks.node(Object.freeze({ ...initial, evaluation: initialEvaluation }), null, initialPlan);
+    }
+    assertValidEvaluation(initialEvaluation);
     const initialExperience = experienceFor(initial, initialEvaluation, null, true);
     experiences.push(initialExperience);
     backpropagateEvaluation(tree, initial.id, initialEvaluation);
@@ -186,6 +191,7 @@ export class NodeWorkflowSearch {
     });
     await saveState();
     let stoppedBecause: SearchResult["stoppedBecause"] = "max-rounds";
+    const proposalRejections: ProposalRejection[] = [];
     if (this.#resume && checkAFlowConvergence(evaluationHistory, 3, 0, this.#patience).converged) stoppedBecause = "converged";
 
     // Format/duplicate rejections regenerate inside a round. As in frozen
@@ -229,6 +235,11 @@ export class NodeWorkflowSearch {
           path: parentPath,
           experiences: relevantExperiences(parent.id, tree, experiences),
           taskGoal: this.#taskGoal,
+          previousRejections: proposalRejections,
+          onRejection: async (rejection) => {
+            proposalRejections.push(rejection);
+            await this.#callbacks.event({ type: "proposal-rejected", round, parentSearchNodeId: parent.id, ...rejection });
+          },
           validate: (value) => void validateProposal(value),
         });
         // Never trust a custom proposer to have called the callback, or to return
@@ -244,7 +255,9 @@ export class NodeWorkflowSearch {
           error: error instanceof Error ? error.message : String(error),
         });
         if (error instanceof ProposalValidationError) {
-          if (++proposalFailures >= 100) throw new Error("100 invalid proposals: search requires attention; no fabricated fallback was evaluated");
+          proposalFailures++;
+          await saveState();
+          if (proposalFailures >= 3) throw new Error("3 invalid proposal batches: search requires attention; no fabricated fallback was evaluated");
         } else {
           completedRounds++;
           await saveState();
@@ -252,6 +265,7 @@ export class NodeWorkflowSearch {
         continue;
       }
       proposalFailures = 0;
+      proposalRejections.length = 0;
 
       const searchNodeId = `search-${String(nextSearchIndex++).padStart(3, "0")}`;
       const child = createSearchTreeNode(
@@ -292,6 +306,10 @@ export class NodeWorkflowSearch {
         throw error;
       }
 
+      if (evaluation.valid === false || evaluation.failedRuns > 0) {
+        await this.#callbacks.node(Object.freeze({ ...child, evaluation }), null, plan);
+      }
+      assertValidEvaluation(evaluation);
       const parentReference = directOrMeanScore(parent);
       const experience = experienceFor(child, evaluation, parentReference, false);
       completedRounds++;

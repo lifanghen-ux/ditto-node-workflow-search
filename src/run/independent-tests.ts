@@ -1,6 +1,7 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CaseResult, EvaluationSummary } from "../domain.js";
+import { assertValidEvaluation } from "../search/backprop.js";
 import { artifactHash, publishCheckpoint, writeArtifact, type WorkflowCheckpoint } from "./checkpoints.js";
 
 export interface IndependentTestSettings {
@@ -60,7 +61,20 @@ export class IndependentRoundTests {
     try { previous = JSON.parse(await readFile(join(directory, "job.json"), "utf8")) as RoundTestJob; }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     if (previous && previous.key !== key) throw new Error("Test settings changed: choose a separate output directory");
-    if (previous?.status === "complete") { this.#jobs.set(checkpoint.searchNodeId, previous); return; }
+    if (previous?.status === "complete") {
+      let saved: EvaluationSummary | undefined;
+      try {
+        const attempt = join(directory, `attempt-${previous.attempt}`);
+        const statistics = JSON.parse(await readFile(join(attempt, "summary.json"), "utf8"));
+        const results = JSON.parse(await readFile(join(attempt, "samples.json"), "utf8"));
+        saved = { ...statistics, results } as EvaluationSummary;
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      if (saved && validTestSummary(saved) && saved.score === previous.score) {
+        this.#jobs.set(checkpoint.searchNodeId, previous); return;
+      }
+      // Preserve legacy complete/invalid metadata before retrying the whole job.
+      await writeArtifact(join(directory, `attempt-${previous.attempt}`, "job.json"), previous);
+    }
     await publishCheckpoint(join(directory, "checkpoint"), checkpoint);
     const job: RoundTestJob = {
       searchNodeId: checkpoint.searchNodeId, key, planHash: checkpoint.planHash,
@@ -109,6 +123,7 @@ export class IndependentRoundTests {
       await writeArtifact(join(attemptDirectory, "summary.json"), statistics);
       // Full raw output is retained for scorer auditing, separate from search.
       await writeArtifact(join(attemptDirectory, "samples.json"), results);
+      if (!validTestSummary(summary)) throw new Error("Invalid independent test evaluation; retry the job after recovery");
       const complete: RoundTestJob = { ...running, status: "complete", updatedAt: new Date().toISOString(), score: summary.score,
         legacyScore: results.reduce((sum, result) => sum + Number(result.details?.legacyAFlowScore ?? result.score), 0) / results.length };
       await writeArtifact(join(directory, "job.json"), complete);
@@ -122,4 +137,11 @@ export class IndependentRoundTests {
       catch (writeError) { console.error(JSON.stringify({ phase: "test-artifact-error", searchNodeId: checkpoint.searchNodeId, error: String(writeError) })); }
     }
   }
+}
+
+function validTestSummary(summary: EvaluationSummary): boolean {
+  try { assertValidEvaluation(summary); } catch { return false; }
+  return summary.examples > 0 && summary.repeats > 0 && Array.isArray(summary.results)
+    && summary.results.length === summary.examples * summary.repeats
+    && summary.results.every(result => result.valid !== false && result.error === undefined);
 }

@@ -6,6 +6,8 @@ export { evaluateTasks } from "./evaluator.js";
 export { gsm8kAdapter } from "./gsm8k.js";
 export { sha256File } from "./io.js";
 export { mathAdapter } from "./math.js";
+export { automationAdapter, automationScope, automationIdentity, AUTOMATION_TOOLS } from "./automation.js";
+export type { AutomationSession } from "./automation.js";
 export { getBenchmarkAdapter, listBenchmarkAdapters, loadBenchmark } from "./registry.js";
 export { lengthBucket, stratifiedSample } from "./sampling.js";
 export { extractLastNumber, normalizeDropAnswer, scoreCompetitionMathAnswer, scoreDropAnswer, scoreGsm8kAnswer } from "./text-scores.js";

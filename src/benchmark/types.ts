@@ -19,9 +19,13 @@ export interface BenchmarkLoadOptions {
   readonly limit?: number;
   readonly seed?: number;
   readonly codeJudge?: CodeJudge;
+  /** Private benchmark worlds/traces; never supplied to the actor or optimizer. */
+  readonly artifactDir?: string;
 }
 
 export interface BenchmarkEvaluationOptions {
+  /** Only supply cases recovered under an identical plan/code/config/data identity. */
+  readonly priorCases?: readonly CaseResult[];
   readonly repeats?: number;
   readonly concurrency?: number;
   readonly retryAttempts?: number;

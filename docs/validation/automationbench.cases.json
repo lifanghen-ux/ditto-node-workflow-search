@@ -1,0 +1,41 @@
+{
+  "dataset": "automationbench",
+  "split": "validate",
+  "seed": 140,
+  "selectedIds": [
+    "automationbench:simple.partner_hubspot_asana",
+    "automationbench:simple.sprint_retro_jira_slack",
+    "automationbench:simple.sheets_closed_deal",
+    "automationbench:simple.csat_sheets_slack_alert",
+    "automationbench:simple.weekly_digest_sheets_email",
+    "automationbench:simple.customer_question_zendesk_reply",
+    "automationbench:simple.email_sheets_update_reply",
+    "automationbench:simple.email_sf_log_task",
+    "automationbench:simple.zendesk_resolve_email",
+    "automationbench:simple.email_airtable_lead",
+    "automationbench:simple.zendesk_billing_ticket",
+    "automationbench:simple.zoom_team_retro",
+    "automationbench:simple.mailchimp_dual_list",
+    "automationbench:simple.slack_weekly_metrics",
+    "automationbench:simple.buffer_webinar_dual_post",
+    "automationbench:simple.sheets_read_then_slack_dm",
+    "automationbench:simple.jira_mobile_redesign_epic",
+    "automationbench:simple.email_hs_create_contact",
+    "automationbench:simple.trello_urgent_support_card",
+    "automationbench:simple.feature_launch_slack"
+  ],
+  "dataFile": "search.jsonl",
+  "dataSha256": "926b0d17a075f71a4851f505bc23c02fb982bb6e01e12506db8a605f40033354",
+  "engineCodeSha256": "99adbc9ecd7caa1a7afc8662b804538c739ae091f35cc4626b04680bc6029582",
+  "sourceSearchCodeSha256": "2bc96521a74ec2f93834f30f8033e3644d8355c330983c9b9eafa853e089d088",
+  "purpose": "20 fixed search engineering acceptance cases, not independent test evaluation",
+  "selectionRule": "First seed >=42 containing a selected-workflow search error when present, the Trello duplicate-argument boundary, one Gmail object-argument boundary, and email/calendar/slack/tabular families",
+  "knownWrongSelected": [
+    "automationbench:simple.trello_urgent_support_card"
+  ],
+  "boundarySelected": [
+    "automationbench:simple.email_sf_log_task",
+    "automationbench:simple.trello_urgent_support_card"
+  ],
+  "previousOfficialAcceptanceCodeSha256": "a5dbc584a52c37fa278f86c5b7d4caebe04b0ec1e501667ffdd466eb228e4705"
+}

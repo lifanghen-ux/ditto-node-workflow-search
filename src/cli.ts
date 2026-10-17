@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { DockerPythonJudge, loadBenchmark, sha256File } from "./benchmark/index.js";
+import { DockerPythonJudge, loadBenchmark, sha256File, automationIdentity } from "./benchmark/index.js";
 import type { BenchmarkSplit, LoadedBenchmark } from "./benchmark/types.js";
 import { loadProviderSettings, parseArguments, type ExperimentOptions, type ProviderSettings } from "./config.js";
 import type { DatasetName, EvaluationSummary } from "./domain.js";
@@ -8,6 +8,8 @@ import { createExperimentRuntime, type ExperimentRuntime } from "./ditto/runtime
 import { NodeWorkflowSearch } from "./search/optimizer.js";
 import { NextNodeProposer } from "./search/proposer.js";
 import { RunStore } from "./run/store.js";
+import { CaseRecovery, displayScore, evaluationCodeHash } from "./run/case-recovery.js";
+import { assertValidEvaluation } from "./search/backprop.js";
 import { loadHistoricalResume } from "./run/resume.js";
 import { WorkflowExecutor } from "./workflow/executor.js";
 import { GENERATION, PROTOCOL } from "./protocol.js";
@@ -32,12 +34,15 @@ async function search(
   experiment: ExperimentRuntime,
   executor: WorkflowExecutor,
 ): Promise<void> {
+  const codeSha256 = await evaluationCodeHash(process.cwd());
   const store = await RunStore.create(options.outputRoot, options.dataset);
-  const loaded = await openBenchmark(options, "validate");
+  const loaded = await openBenchmark(options, "validate", store.directory);
+  const automation = options.dataset === "automationbench" ? await automationIdentity() : undefined;
   const dataPath = benchmarkPath(options, "validate");
-  const restored = options.resumeDir ? await loadHistoricalResume(options.resumeDir, options.resumeRound!) : undefined;
+  const restored = options.resumeDir ? await loadHistoricalResume(options.resumeDir, options.resumeRound!, codeSha256) : undefined;
   if (restored) {
     const prior = restored.manifest;
+    if (automation && JSON.stringify(prior.automation) !== JSON.stringify(automation)) throw new Error("Resume AutomationBench source/environment/scorer identity differs");
     const priorSearch = prior.search as Record<string, unknown>;
     const expected = { rounds: options.rounds, repeats: options.repeats, testRepeats: options.testRepeats,
       topK: options.topK, convergenceConsecutiveRounds: options.patience, maximumDepth: options.maximumDepth, seed: options.seed };
@@ -64,6 +69,7 @@ async function search(
     independentRoundTests: { checkpointDirectory: "checkpoints", resultsUsedBySearch: false },
     generation: GENERATION,
     protocol: PROTOCOL,
+    ...(automation ? { automation } : {}),
     ...(restored ? { resumedFrom: { directory: options.resumeDir, completedSearchRounds: restored.state.completedRounds,
       discardedIncompleteRound: restored.state.completedRounds + 1, originalProviderConcurrency: restored.manifest.providerConcurrency } } : {}),
     search: {
@@ -87,6 +93,7 @@ async function search(
     },
     ...(isCodeDataset(options.dataset) ? { codeJudge: { kind: "docker", image: options.dockerImage, network: "none" } } : {}),
   };
+  manifest.evaluationCodeSha256 = codeSha256;
   await store.writeManifest(manifest);
   console.log(JSON.stringify({ phase: "search-start", dataset: options.dataset, examples: loaded.tasks.length, runDirectory: store.directory }));
 
@@ -94,15 +101,39 @@ async function search(
     // Publish locally before validation. A separate process consumes these
     // files; no test score or test completion enters this search process.
     await store.saveCheckpoint(plan);
+    const recovery = await CaseRecovery.open(join(options.outputRoot, ".case-checkpoints", options.dataset), {
+      schemaVersion: 1, plan, codeSha256, data: manifest.data,
+      metricProfile: manifest.metricProfile, protocol: PROTOCOL, generation: GENERATION,
+      ...(automation ? { automation } : {}),
+      dittoVersion: manifest.dittoVersion, nodeVersion: process.version,
+      model: provider.model, endpoint: provider.baseUrl, timeoutMs: provider.timeoutMs,
+      repeats: options.repeats, scorerPython: process.env.MATH_SCORER_PYTHON || process.env.AFLOW_SCORER_PYTHON || "python",
+      dockerImage: options.dockerImage,
+    }, {
+      providerConcurrency: provider.concurrency, evaluationConcurrency: options.evaluationConcurrency,
+    });
+    const recoveryRecord = { type: "case-recovery", planId: plan.id, identity: recovery.identity,
+      recoveredValidCases: recovery.priorCases.filter(value => value.valid === true).length,
+      originalOperations: recovery.originalOperations, currentOperations: recovery.currentOperations };
+    await store.appendEvent(recoveryRecord);
+    const caseRecoveries = (manifest.caseRecoveries ?? []) as unknown[];
+    caseRecoveries.push(recoveryRecord);
+    manifest.caseRecoveries = caseRecoveries;
+    await store.writeManifest(manifest);
     let scoreSum = 0;
-    return loaded.evaluate(
+    let scoringValid = true;
+    const summary = await loaded.evaluate(
       (task) => executor.run(plan, task),
       {
         repeats: options.repeats,
         concurrency: options.evaluationConcurrency,
         retryAttempts: 5,
+        priorCases: recovery.priorCases,
         async onCase(progress) {
           scoreSum += progress.result.score;
+          scoringValid &&= progress.result.valid === true;
+          const runningScore = displayScore(scoringValid, scoreSum / progress.completed);
+          await recovery.record(progress.result);
           await store.saveLiveCase(plan.leafSearchNodeId, progress.result);
           console.log(JSON.stringify({
             phase: "validation-progress",
@@ -110,8 +141,9 @@ async function search(
             completed: progress.completed,
             total: progress.total,
             caseId: progress.result.caseId,
-            caseScore: progress.result.score,
-            runningScore: scoreSum / progress.completed,
+            caseScore: displayScore(progress.result.valid === true, progress.result.score),
+            runningScore,
+            valid: progress.result.valid,
             failed: progress.result.error !== undefined,
             failureKind: progress.result.failureKind ?? null,
             at: new Date().toISOString(),
@@ -119,6 +151,8 @@ async function search(
         },
       },
     );
+    await recovery.finish(summary.valid === true);
+    return summary;
   };
   const proposer = new NextNodeProposer(experiment.runtime, experiment.providerName, experiment.model);
   let checkpointScore = -Infinity;
@@ -139,7 +173,8 @@ async function search(
         if (node.evaluation) await store.saveEvaluation(node.id, node.evaluation);
         if (node.evaluation && plan) await store.saveCheckpoint(plan);
         if (experience) await store.saveExperience(experience);
-        if (node.evaluation && plan && node.evaluation.score > checkpointScore) {
+        if (node.evaluation && node.evaluation.valid !== false && node.evaluation.failedRuns === 0
+          && plan && node.evaluation.score > checkpointScore) {
           checkpointScore = node.evaluation.score;
           await store.saveBest({ leaf: node, plan, nodePath: plan.nodes, validation: node.evaluation,
             stoppedBecause: "search-in-progress", exploredNodes: 0 });
@@ -159,6 +194,7 @@ async function search(
     const result = await optimizer.run();
     const validation = result.bestLeaf.evaluation;
     if (!validation) throw new Error("Best search leaf has no direct validation evaluation");
+    assertValidEvaluation(validation);
     await store.saveTreeSnapshot(result.nodes);
     await store.saveBest({
       leaf: result.bestLeaf,
@@ -208,6 +244,7 @@ async function testFrozen(
   if (!options.runDir) throw new Error("test requires --run-dir");
   const store = await RunStore.open(options.runDir);
   const manifest = await store.readManifest();
+  if (options.dataset === "automationbench" && JSON.stringify(manifest.automation) !== JSON.stringify(await automationIdentity())) throw new Error("Frozen AutomationBench source/environment/scorer identity differs");
   if (manifest.model !== provider.model || manifest.endpoint !== provider.baseUrl
     || JSON.stringify(manifest.protocol) !== JSON.stringify(PROTOCOL)) {
     throw new Error("Frozen model/endpoint/protocol does not match the current test configuration");
@@ -220,10 +257,11 @@ async function testFrozen(
     throw new Error(`Frozen run is not ready for test: status=${String(manifest.status)}`);
   }
   const plan = await store.readBestPlan();
-  const loaded = await openBenchmark(options, "test");
+  const loaded = await openBenchmark(options, "test", store.directory);
   const dataPath = benchmarkPath(options, "test");
   console.log(JSON.stringify({ phase: "test-start", dataset: options.dataset, examples: loaded.tasks.length, frozenPlan: plan.id }));
   let scoreSum = 0;
+  let scoringValid = true;
   const summary = await loaded.evaluate(
     (task) => executor.run(plan, task),
     {
@@ -232,6 +270,8 @@ async function testFrozen(
       retryAttempts: 5,
       async onCase(progress) {
         scoreSum += progress.result.score;
+        scoringValid &&= progress.result.valid === true;
+        const runningScore = displayScore(scoringValid, scoreSum / progress.completed);
         await store.saveLiveCase("test", progress.result);
         console.log(JSON.stringify({
           phase: "test-progress",
@@ -239,8 +279,9 @@ async function testFrozen(
           completed: progress.completed,
           total: progress.total,
           caseId: progress.result.caseId,
-          caseScore: progress.result.score,
-          runningScore: scoreSum / progress.completed,
+          caseScore: displayScore(progress.result.valid === true, progress.result.score),
+          runningScore,
+          valid: progress.result.valid,
           failed: progress.result.error !== undefined,
           failureKind: progress.result.failureKind ?? null,
           at: new Date().toISOString(),
@@ -250,24 +291,27 @@ async function testFrozen(
   );
   await store.saveTest(summary);
   Object.assign(manifest, {
-    status: "complete",
+    status: summary.valid === true ? "complete" : "failed",
     completedAt: new Date().toISOString(),
     test: {
       file: basename(dataPath),
       sha256: await sha256File(dataPath),
       selectedExamples: loaded.tasks.length,
       selectedIds: loaded.tasks.map((task) => task.id),
-      score: summary.score,
+      score: displayScore(summary.valid === true, summary.score),
+      valid: summary.valid,
       repeats: summary.repeats,
       standardDeviation: summary.standardDeviation,
     },
     execution: { model: provider.model, endpoint: provider.baseUrl },
   });
   await store.writeManifest(manifest);
-  console.log(JSON.stringify({ phase: "test-complete", dataset: options.dataset, examples: loaded.tasks.length, score: summary.score, runDirectory: store.directory }));
+  console.log(JSON.stringify({ phase: summary.valid === true ? "test-complete" : "test-invalid", dataset: options.dataset,
+    examples: loaded.tasks.length, score: displayScore(summary.valid === true, summary.score), runDirectory: store.directory }));
+  assertValidEvaluation(summary);
 }
 
-async function openBenchmark(options: ExperimentOptions, split: BenchmarkSplit): Promise<LoadedBenchmark> {
+async function openBenchmark(options: ExperimentOptions, split: BenchmarkSplit, artifactDir: string): Promise<LoadedBenchmark> {
   if (isCodeDataset(options.dataset)) {
     const judge = new DockerPythonJudge({ image: options.dockerImage });
     await judge.preflight();
@@ -284,10 +328,12 @@ async function openBenchmark(options: ExperimentOptions, split: BenchmarkSplit):
     split,
     limit: split === "validate" ? options.searchLimit : options.testLimit,
     seed: split === "validate" ? options.seed : options.seed + 1,
+    artifactDir,
   });
 }
 
 function benchmarkPath(options: ExperimentOptions, split: BenchmarkSplit): string {
+  if (options.dataset === "automationbench") return join(options.dataDir, split === "validate" ? "search.jsonl" : "test.jsonl");
   return join(options.dataDir, `${options.dataset}_${split}.jsonl`);
 }
 
@@ -301,7 +347,8 @@ function metricProfile(dataset: DatasetName): string {
     case "humaneval": return "docker-private-tests-pass-at-1-v1";
     case "mbpp": return "docker-private-tests-pass-at-1-v1";
     case "gsm8k": return "last-number-accuracy-v1";
-    case "math": return "aflow-symbolic-plus-declared-answer-normalized-v3";
+    case "math": return "mflow-math-verify-0.9.0";
+    case "automationbench": return "automationbench-official-assertions-v1";
   }
 }
 
@@ -312,6 +359,7 @@ function taskGoal(dataset: DatasetName): string {
     case "mbpp": return "Search a compact Ditto Node path that produces correct MBPP Python functions under private tests.";
     case "gsm8k": return "Search a compact Ditto Node path that solves GSM8K word problems with correct final numbers.";
     case "math": return "Search a compact Ditto Node path that maximizes mathematical answer accuracy on competition problems.";
+    case "automationbench": return "Search a compact planning workflow for business automation, followed by the same native Runtime action stage for every candidate. Optimize official final-world task completion.";
   }
 }
 
@@ -325,6 +373,7 @@ function initialInstruction(dataset: DatasetName): string {
     // Ditto's baseline objective empty; differences added by Ditto Node
     // semantics remain the intended framework variable.
     case "math": return "";
+    case "automationbench": return "Prepare a concrete tool-use plan for the following task. Planning does not perform actions; an execution stage will use the official APIs afterward.\n\n";
   }
 }
 

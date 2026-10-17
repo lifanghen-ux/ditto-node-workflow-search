@@ -1,13 +1,16 @@
-/** Frozen settings for the DeepSeek Flash MATH comparison. */
-export const GENERATION = Object.freeze({ temperature: 0.2, topP: 1, maxTokens: 16_384 });
+/** Shared request protocol. Actual run sizes/repeats are frozen in manifest.search. */
+export const GENERATION = Object.freeze({ temperature: 0, maxTokens: 393_216 });
 export const PROTOCOL = Object.freeze({
-  id: "aflow-flash-math-v2",
+  id: "ditto-search-flash-20261017-v1",
   generation: GENERATION,
-  thinking: "enabled (provider default in both arms)",
-  reasoningEffort: "high (provider default in both arms)",
-  searchRounds: 20,
-  validationRepeats: 5,
-  testRepeats: 3,
+  thinking: "disabled",
+  responseFormat: "text",
+  stream: true,
+  candidates: 1,
+  omittedParameters: Object.freeze(["top_p", "reasoning_effort"]),
+  defaultSearchRounds: 20,
+  defaultValidationRepeats: 5,
+  defaultTestRepeats: 3,
   selectionTopK: 4,
   selectionAlpha: 0.2,
   selectionLambda: 0.3,
