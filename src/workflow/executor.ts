@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { isRawBaseline } from "./spec.js";
+import { captureProviderDiagnostics, summarizeProviderDiagnostics } from "../ditto/provider-diagnostics.js";
 import type { Context, ContextItem as SharedContextItem } from "@codesoul-co/ditto/contracts";
 import {
   graph,
@@ -28,6 +29,8 @@ import type {
   SearchableNodeType,
   WorkflowNodeSpec,
 } from "../domain.js";
+import { automationScope } from "../benchmark/automation.js";
+import { runOrganization } from "./organization-executor.js";
 
 type NormalizedNodeOutput = Context | TrajectoryOutput | SampleOutput | DeliberateOutput | ReflectOutput;
 
@@ -51,6 +54,31 @@ interface ExecutionState {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  usageKnown: boolean;
+}
+
+/** Preserve known consumption when a workflow fails after one or more model calls. */
+export class WorkflowExecutionError extends Error {
+  readonly providerDiagnostics;
+  readonly inputTokens;
+  readonly outputTokens;
+  readonly totalTokens;
+  readonly providerAttempts;
+  readonly failedProviderAttempts;
+  readonly unknownUsageAttempts;
+  readonly usageKnown: boolean;
+
+  constructor(error: unknown, diagnostics: ReturnType<typeof summarizeProviderDiagnostics>) {
+    super(error instanceof Error ? error.message : String(error), { cause: error });
+    this.providerDiagnostics = diagnostics.providerDiagnostics;
+    this.usageKnown = diagnostics.usageKnown;
+    this.inputTokens = diagnostics.inputTokens;
+    this.outputTokens = diagnostics.outputTokens;
+    this.totalTokens = diagnostics.totalTokens;
+    this.providerAttempts = diagnostics.providerAttempts;
+    this.failedProviderAttempts = diagnostics.failedProviderAttempts;
+    this.unknownUsageAttempts = diagnostics.unknownUsageAttempts;
+  }
 }
 
 /**
@@ -82,6 +110,8 @@ export class WorkflowExecutor {
    * in execution; only `WorkflowNodeSpec.dependencies` become Graph dependencies.
    */
   async run(plan: AgentPlanSpec, task: BenchmarkTask, signal?: AbortSignal): Promise<AgentRunResult> {
+    if (plan.organization) return runOrganization(this.#runtime, this.#model, plan, task, signal);
+    if (task.dataset === "automationbench") throw new Error("Automation requires a complete searched organization; planning-only legacy plans must be re-searched");
     const nodesById = validatePlan(plan);
     const compiled = compileGraphs(plan, nodesById, this.#model);
     const graphOptions = signal ? { signal } : {};
@@ -111,7 +141,7 @@ export class WorkflowExecutor {
             const output = normalizeNodeOutput(node, rawOutputs[node.id]);
             state.outputs[node.id] = output;
             state.executedNodeIds.push(node.id);
-            addUsage(state, usageOf(output));
+            if (!isContext(output)) addUsage(state, usageOf(output));
           }
 
           graphId = nextGraphId(
@@ -130,11 +160,19 @@ export class WorkflowExecutor {
           inputTokens: state.inputTokens,
           outputTokens: state.outputTokens,
           totalTokens: state.totalTokens,
+          usageKnown: state.usageKnown,
         });
       },
     });
 
-    return this.#runtime.loop(definition, task, signal ? { signal } : {});
+    return captureProviderDiagnostics(async (records) => {
+      try {
+        const result = await this.#runtime.loop(definition, task, signal ? { signal } : {});
+        return records.length ? Object.freeze({ ...result, ...summarizeProviderDiagnostics(records) }) : result;
+      } catch (error) {
+        throw new WorkflowExecutionError(error, summarizeProviderDiagnostics(records));
+      }
+    });
   }
 }
 
@@ -201,7 +239,7 @@ function nodeInput(
   const context = dependencyContext(dependencies);
   const messages = dependencyMessages(dependencies);
   const taskMessage = taskText(task);
-  const metadata = { experiment: "ditto-workflow-search", dataset: task.dataset, taskId: task.id, nodeId: node.id };
+  const metadata = { experiment: "ditto-workflow-search", dataset: task.dataset, taskId: task.id, nodeId: node.id, nodeType: node.type };
 
   switch (node.type) {
     case "CONTEXT.LOAD":
@@ -224,7 +262,8 @@ function nodeInput(
         strategy: { name: node.config.strategy, options: { ...node.config.options } },
         model,
         generation: node.config.generation,
-        constraints: { maxSteps: node.config.maxSteps },
+        // Core defaults to 16 when omitted; its public contract accepts safe integers.
+        constraints: { maxSteps: Number.MAX_SAFE_INTEGER },
         metadata,
       };
 
@@ -389,6 +428,7 @@ function conditionMatches(
     case "not-equals": return !isDeepStrictEqual(value, condition.value);
     case "truthy": return Boolean(value);
     case "falsy": return !value;
+    case "has-pending-actions": case "no-pending-actions": throw new Error("Action conditions require an organization plan");
   }
 }
 
@@ -404,6 +444,13 @@ function unwrap<T>(result: NodeResult<T>, nodeId: string): T {
   if (!result || result.status !== "success" || result.output === undefined) {
     const status = result?.status ?? "invalid-result";
     throw new Error(`Node ${nodeId} failed [${result?.error?.code ?? status}]: ${result?.error?.message ?? "no output"}`);
+  }
+  if (result.output && typeof result.output === "object") {
+    const output = result.output as Record<string, unknown>;
+    if (output.finishReason === "error" || output.finishReason === "cancelled" ||
+        output.stopReason === "error" || output.stopReason === "cancelled") {
+      throw new Error(`Node ${nodeId} failed [PROVIDER_OUTPUT_TRUNCATED]: ${String(output.finishReason ?? output.stopReason)}`);
+    }
   }
   return result.output;
 }
@@ -464,6 +511,7 @@ function createExecutionState(): ExecutionState {
     inputTokens: 0,
     outputTokens: 0,
     totalTokens: 0,
+    usageKnown: true,
   };
 }
 
@@ -472,6 +520,7 @@ function usageOf(output: NormalizedNodeOutput): Usage | undefined {
 }
 
 function addUsage(state: ExecutionState, usage?: Usage): void {
+  if (!usage || usage.inputTokens === undefined || usage.outputTokens === undefined) state.usageKnown = false;
   if (!usage) return;
   const input = usage.inputTokens ?? 0;
   const output = usage.outputTokens ?? 0;

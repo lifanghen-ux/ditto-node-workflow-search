@@ -9,16 +9,17 @@
     "npm": ">=11.0.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/record-build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/test/*.test.js dist/benchmark/*.test.js scripts/night_watchdog.test.mjs",
+    "test": "npm run build && node --test dist/test/*.test.js dist/benchmark/*.test.js scripts/night_watchdog.test.mjs acceptance/*.test.mjs",
     "check": "npm run typecheck && npm test",
     "test:rounds": "node --env-file-if-exists=.env dist/round-test-runner.js",
     "search:drop": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset drop",
     "search:humaneval": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset humaneval",
     "search:mbpp": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset mbpp",
     "search:gsm8k": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset gsm8k",
-    "search:math": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset math"
+    "search:math": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset math",
+    "search:automationbench": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset automationbench"
   },
   "dependencies": {
     "@codesoul-co/ditto": "0.1.1"

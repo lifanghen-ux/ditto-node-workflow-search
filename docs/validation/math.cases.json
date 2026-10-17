@@ -1,0 +1,39 @@
+{
+  "dataset": "math",
+  "split": "validate",
+  "seed": 46,
+  "selectedIds": [
+    "math:validate:11:d17314b079a3995f",
+    "math:validate:107:4604a98c216fcfc0",
+    "math:validate:84:5bf63de275efab86",
+    "math:validate:64:735e0e0009fdf895",
+    "math:validate:9:98bb9a0e26af7393",
+    "math:validate:117:95278e3cb5ff3c1d",
+    "math:validate:71:8fdaec89714dc14b",
+    "math:validate:59:5c8bcc461f35a1c6",
+    "math:validate:8:b5edb02bf63206cf",
+    "math:validate:97:a922b1548ed7c7b3",
+    "math:validate:73:39193a654053c48e",
+    "math:validate:63:65cb5c1b514d4eb3",
+    "math:validate:19:47a3dbdbbec5e114",
+    "math:validate:104:3e0302b4765cfdca",
+    "math:validate:94:7a8f68df2375b89c",
+    "math:validate:50:11461be795ea9962",
+    "math:validate:27:c2acdc62e9c9e074",
+    "math:validate:105:7f8d62a2a793f5cc",
+    "math:validate:70:8875ed2ede49058e",
+    "math:validate:60:22d4dd8ab9824a69"
+  ],
+  "dataFile": "math_validate.jsonl",
+  "dataSha256": "0ade63e8c9fe01fb8964fa22f73423be5e1c78addc9942808de464cabab188c0",
+  "engineCodeSha256": "99adbc9ecd7caa1a7afc8662b804538c739ae091f35cc4626b04680bc6029582",
+  "sourceSearchCodeSha256": "3c28a965ed54ab338488019b9c64e95d6b290237ba1a012a5abbe728924ded6c",
+  "purpose": "20 fixed search engineering acceptance cases, not independent test evaluation",
+  "promptProtocol": {
+    "id": "math-common-termination-v2",
+    "guidance": "Solve the problem directly. Present each calculation or case only once. Do not add self-checks, alternative interpretations, or repeated verification after completing the solution. End with the final answer.",
+    "userApproved": true
+  },
+  "engineIdentityProtocol": "ditto-evaluation-code-v2:utf8-crlf-to-lf",
+  "previousOfficialAcceptanceCodeSha256": "a5dbc584a52c37fa278f86c5b7d4caebe04b0ec1e501667ffdd466eb228e4705"
+}

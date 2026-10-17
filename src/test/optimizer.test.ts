@@ -11,7 +11,7 @@ test("resuming after round two preserves selection, scores and convergence witho
       const proposal: NodeProposal = {
         type: "INFER.REASONING.SAMPLE", graphId: "solve", dependencies: [],
         config: { role: "solver", instruction: `candidate-${request.experiences.length}-${request.path.length}`,
-          generation: { temperature: 0.2, maxTokens: 2048 } },
+          generation: { temperature: 0, maxTokens: 393_216 } },
       };
       request.validate?.(proposal);
       return proposal;
@@ -72,7 +72,7 @@ test("search spends rounds only on evaluated workflows and applies AFlow Top-3 c
           config: Object.freeze({
             role: "solver",
             instruction: `Independent candidate ${proposals}`,
-            generation: Object.freeze({ temperature: 0.2, maxTokens: 2_048 }),
+            generation: Object.freeze({ temperature: 0, maxTokens: 393_216 }),
           }),
         });
         request.validate?.(proposal);
@@ -103,3 +103,25 @@ function summary(score: number): EvaluationSummary {
     results: Object.freeze([]),
   });
 }
+
+test("repeated structural rejection stops after three saved batches without scoring a fallback", async () => {
+  const { ProposalValidationError } = await import("../search/proposer.js");
+  let proposals = 0;
+  let evaluations = 0;
+  const states: number[] = [];
+  const rejected: unknown[] = [];
+  await assert.rejects(new NodeWorkflowSearch({ rounds: 20, topK: 1, patience: 5, seed: 42,
+    async evaluate() { evaluations++; return summary(0.5); },
+    proposer: { async propose(request) {
+      proposals++;
+      assert.equal(request.previousRejections?.length, proposals - 1);
+      await request.onRejection?.({ content: "raw invalid proposal", error: "cross-Graph dependency" });
+      throw new ProposalValidationError("cross-Graph dependency");
+    } },
+    callbacks: { async state(state) { states.push(state.proposalFailures); }, async event(value) { if (value.type === "proposal-rejected") rejected.push(value); } },
+  }).run(), /3 invalid proposal batches/);
+  assert.equal(proposals, 3);
+  assert.equal(evaluations, 1, "only the baseline is evaluated");
+  assert.deepEqual(states, [0, 1, 2, 3]);
+  assert.equal(rejected.length, 3);
+});

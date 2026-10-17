@@ -1,0 +1,25 @@
+{
+  "repository": "https://github.com/erwinmsmith/MFlow",
+  "revision": "437040f17a17cbf430f3f41227ca64c576cf1056",
+  "sources": [
+    {
+      "path": "src/generation-guidance.ts",
+      "gitBlob": "a4f5d8968073e4f2a0fd3a27e384e3c0e8e64f8f",
+      "local": "src/ditto/generation-guidance.ts",
+      "policy": "Exact implementation with attribution header; same python/json applicability and thresholds"
+    },
+    {
+      "path": "src/provider-progress.ts",
+      "gitBlob": "9f885ac3014df0b5180b5949135a3765d79f6a8c",
+      "local": "src/ditto/repetition-guidance.ts",
+      "policy": "Same repeatedToolCycles function, diagnostic text and four/five thresholds"
+    },
+    {
+      "path": "src/aflow-seed.ts",
+      "local": "src/workflow/organization.ts",
+      "policy": "Exact automationInstruction task guidance"
+    }
+  ],
+  "removed": "Ditto-only MATH_TERMINATION_GUIDANCE including prohibition on self-checks",
+  "actualBaselineRunManifestProvided": false
+}

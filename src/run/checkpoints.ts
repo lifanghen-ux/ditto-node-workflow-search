@@ -4,9 +4,11 @@ import { renameArtifact } from "./atomic.js";
 import { dirname, join } from "node:path";
 import type { AgentPlanSpec, DatasetName, WorkflowNodeSpec } from "../domain.js";
 import { DATASETS } from "../domain.js";
+import { validateOrganizationPlan } from "../workflow/organization.js";
 import { materializeAgentPlan } from "../workflow/spec.js";
 
 export interface WorkflowCheckpoint {
+  readonly executionIdentity?: unknown;
   readonly schemaVersion: 1;
   readonly searchNodeId: string;
   readonly plan: AgentPlanSpec;
@@ -27,7 +29,7 @@ export function checkpointForPlan(plan: AgentPlanSpec, manifest: Record<string, 
     if (typeof manifest[key] !== "string") throw new Error(`Checkpoint manifest lacks ${key}`);
   }
   const checkpoint: WorkflowCheckpoint = {
-    schemaVersion: 1, searchNodeId: plan.leafSearchNodeId, plan, planHash: artifactHash(plan),
+    schemaVersion: 1, ...(manifest.executionIdentity ? {executionIdentity: manifest.executionIdentity} : {}), searchNodeId: plan.leafSearchNodeId, plan, planHash: artifactHash(plan),
     dataset: manifest.dataset as DatasetName, model: manifest.model as string, endpoint: manifest.endpoint as string,
     protocol: manifest.protocol, metricProfile: manifest.metricProfile as string, dittoVersion: manifest.dittoVersion as string,
   };
@@ -38,6 +40,7 @@ export function checkpointForPlan(plan: AgentPlanSpec, manifest: Record<string, 
 export function validateCheckpoint(checkpoint: WorkflowCheckpoint): void {
   if (checkpoint.schemaVersion !== 1 || !/^search-\d+$/.test(checkpoint.searchNodeId)) throw new Error("Invalid checkpoint identity");
   if (artifactHash(checkpoint.plan) !== checkpoint.planHash) throw new Error("Checkpoint hash mismatch");
+  if (checkpoint.plan.organization) { validateOrganizationPlan(checkpoint.plan); return; }
   const rebuilt = materializeAgentPlan(checkpoint.searchNodeId, checkpoint.plan.nodes);
   if (artifactHash(rebuilt) !== checkpoint.planHash) throw new Error("Checkpoint is not the declared Ditto Node/Graph/Loop plan");
 }

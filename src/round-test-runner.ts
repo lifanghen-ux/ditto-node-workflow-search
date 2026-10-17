@@ -1,3 +1,5 @@
+import { pythonExecutionIdentity } from "./run/python-identity.js";
+import { assertExecutionIdentity, currentExecutionIdentity } from "./run/execution-identity.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadBenchmark, sha256File } from "./benchmark/index.js";
@@ -16,8 +18,12 @@ async function main(): Promise<void> {
   const testFile = join(options.dataDirectory, "math_test.jsonl");
   const testDataHash = await sha256File(testFile);
   const manifest = JSON.parse(await readFile(join(options.runDirectory, "manifest.json"), "utf8")) as Record<string, unknown>;
+  const frozenIdentity = manifest.executionIdentity as { providerTimeoutMs?: number } | undefined;
+  const executionIdentity = { ...await currentExecutionIdentity(process.cwd()), python: await pythonExecutionIdentity("math"), providerTimeoutMs: frozenIdentity?.providerTimeoutMs };
+  assertExecutionIdentity(manifest.executionIdentity, executionIdentity);
+  if (manifest.frozenTestDataSha256 !== testDataHash) throw new Error("Frozen Test data differs");
   if (manifest.dataset !== "math") throw new Error("This independent runner currently supports MATH only");
-  if (manifest.metricProfile !== "aflow-symbolic-plus-declared-answer-normalized-v3") throw new Error("Test scoring must match the frozen search scoring version");
+  if (manifest.metricProfile !== "mflow-math-verify-0.9.0") throw new Error("Test scoring must match the frozen search scoring version");
   const benchmark = await loadBenchmark("math", { dataDir: options.dataDirectory, split: "test", limit: 0, seed: 43 });
   if (options.dryRun) {
     // No runtime/provider construction, writes, scorer process or model calls.
@@ -32,10 +38,12 @@ async function main(): Promise<void> {
   }
   const provider = Object.freeze({ ...loadProviderSettings(), concurrency: options.providerConcurrency });
   if (manifest.model !== provider.model || manifest.endpoint !== provider.baseUrl || JSON.stringify(manifest.protocol) !== JSON.stringify(PROTOCOL)) throw new Error("Test model/endpoint/protocol differs from frozen search");
+  if (provider.timeoutMs !== frozenIdentity?.providerTimeoutMs) throw new Error("Provider timeout differs from frozen search");
   const releaseLock = await acquireTestLock(options.outputDirectory);
   const experiment = createExperimentRuntime(provider);
   const executor = new WorkflowExecutor(experiment.runtime, experiment.providerName, experiment.model);
   const validate = (checkpoint: WorkflowCheckpoint): void => {
+    assertExecutionIdentity(checkpoint.executionIdentity, executionIdentity);
     if (checkpoint.dataset !== "math" || checkpoint.model !== provider.model || checkpoint.endpoint !== provider.baseUrl
       || checkpoint.metricProfile !== manifest.metricProfile || checkpoint.dittoVersion !== manifest.dittoVersion
       || JSON.stringify(checkpoint.protocol) !== JSON.stringify(PROTOCOL)) throw new Error("Checkpoint metadata differs from the frozen experiment");
@@ -57,6 +65,7 @@ async function main(): Promise<void> {
       },
     });
   });
+  await writeArtifact(join(options.outputDirectory, "execution-identity.json"), executionIdentity);
   const saveStatus = async (): Promise<void> => writeArtifact(join(options.outputDirectory, "status.json"), {
     at: new Date().toISOString(), searchRun: options.runDirectory, testDataHash,
     model: provider.model, sampleConcurrency: options.concurrency, providerConcurrency: options.providerConcurrency,

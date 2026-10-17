@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -8,6 +8,19 @@ import { NodeWorkflowSearch, type SearchResumeState } from "../search/optimizer.
 import { loadHistoricalResume } from "../run/resume.js";
 import { RunStore } from "../run/store.js";
 import { renameArtifact } from "../run/atomic.js";
+
+const codeSha256 = "a".repeat(64);
+
+test("resume rejects missing or changed code identity before reading saved evaluations", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ditto-resume-code-"));
+  try {
+    for (const manifest of [{}, { evaluationCodeSha256: "b".repeat(64) }]) {
+      await writeFile(join(directory, "manifest.json"), JSON.stringify(manifest), "utf8");
+      // No tree, state, experience or evaluation files exist: the identity gate must fail first.
+      await assert.rejects(loadHistoricalResume(directory, 1, codeSha256), /Resume evaluation code hash is missing or differs/);
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 
 test("Windows sharing violations retry atomic rename without deleting or overwriting artifacts", async () => {
   let attempts = 0;
@@ -29,7 +42,7 @@ test("an earlier boundary in a resumed run replays the inherited prefix and excl
     const settings = { seed: 42, topK: 4, maximumDepth: 10 };
     const run = async (rounds: number, resume?: SearchResumeState, source?: string) => {
       const store = await RunStore.create(directory, "math");
-      await store.writeManifest({ search: settings,
+      await store.writeManifest({ search: settings, evaluationCodeSha256: codeSha256,
         ...(source ? { resumedFrom: { directory: source, completedSearchRounds: resume!.completedRounds } } : {}) });
       const result = await new NodeWorkflowSearch({ rounds, topK: 4, patience: 20, maxDepth: 10, seed: 42,
         ...(resume ? { resume } : {}),
@@ -43,7 +56,7 @@ test("an earlier boundary in a resumed run replays the inherited prefix and excl
           async propose(request): Promise<NodeProposal> {
             return { type: "INFER.REASONING.SAMPLE", graphId: "solve", dependencies: [],
               config: { role: "solver", instruction: `candidate-${request.experiences.length}-${request.path.length}`,
-                generation: { temperature: .2, maxTokens: 2048 } } };
+                generation: { temperature: 0, maxTokens: 393_216 } } };
           },
         }, callbacks: {
           async node(node, experience) {
@@ -57,10 +70,10 @@ test("an earlier boundary in a resumed run replays the inherited prefix and excl
       return { result, directory: store.directory };
     };
     const first = await run(2);
-    const boundary2 = await loadHistoricalResume(first.directory, 2);
+    const boundary2 = await loadHistoricalResume(first.directory, 2, codeSha256);
     const second = await run(8, boundary2.state, first.directory);
     const before = await readFile(join(second.directory, "resume-state.json"), "utf8");
-    const recovered = await loadHistoricalResume(second.directory, 6);
+    const recovered = await loadHistoricalResume(second.directory, 6, codeSha256);
     const uninterrupted = await run(6);
     assert.equal(recovered.state.completedRounds, 6);
     assert.deepEqual(recovered.state.nodes, uninterrupted.result.nodes);

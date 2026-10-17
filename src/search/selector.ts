@@ -1,5 +1,6 @@
 import type { SearchTreeNode } from "../domain.js";
 import type { SeededRandom } from "./random.js";
+import { assertValidEvaluation } from "./backprop.js";
 
 export const AFLOW_SELECTION_ALPHA = 0.2;
 export const AFLOW_SELECTION_LAMBDA = 0.3;
@@ -15,6 +16,7 @@ export function selectParent(
   if (candidates.some((candidate) => !candidate.evaluation)) {
     throw new Error("AFlow parent selection accepts only complete evaluated workflows");
   }
+  for (const candidate of candidates) assertValidEvaluation(candidate.evaluation!);
 
   // Array.sort is stable in supported Node versions, matching AFlow's score-only
   // ordering for ties before sampling from the highest-scoring unique rounds.
@@ -55,6 +57,8 @@ export function compareSearchNodes(left: SearchTreeNode, right: SearchTreeNode):
 
 /** Direct leaf evaluations use this comparator when freezing the best path. */
 export function compareRunnableLeaves(left: SearchTreeNode, right: SearchTreeNode): number {
+  if (left.evaluation) assertValidEvaluation(left.evaluation);
+  if (right.evaluation) assertValidEvaluation(right.evaluation);
   if (!left.evaluation || !right.evaluation) {
     if (left.evaluation) return -1;
     if (right.evaluation) return 1;

@@ -1,6 +1,6 @@
 import type { DeliberationMode, ReflectionMode } from "@codesoul-co/ditto/worker/infer";
 
-export const DATASETS = ["drop", "humaneval", "mbpp", "gsm8k", "math"] as const;
+export const DATASETS = ["drop", "humaneval", "mbpp", "gsm8k", "math", "automationbench"] as const;
 export type DatasetName = (typeof DATASETS)[number];
 
 export const STRATEGIES = ["cot", "long-cot", "tot", "got", "self-consistency"] as const;
@@ -11,7 +11,9 @@ export type SearchableNodeType =
   | "INFER.REASONING.SAMPLE"
   | "INFER.REASONING.TRAJECTORY"
   | "INFER.REASONING.REFLECT"
-  | "INFER.REASONING.DELIBERATE";
+  | "INFER.REASONING.DELIBERATE"
+  | "CONTEXT.UPDATE" | "CONTEXT.SELECT" | "CONTEXT.COMPRESS"
+  | "INTERACTION.ACT.TOOL" | "INTERACTION.OBSERVE" | "INTERACTION.OUTPUT";
 
 export interface GenerationSpec {
   readonly temperature: number;
@@ -48,7 +50,8 @@ export interface TrajectoryNodeSpec {
     readonly strategy: StrategyName;
     readonly options: Readonly<Record<string, number>>;
     readonly generation: GenerationSpec;
-    readonly maxSteps: number;
+    /** New plans omit this; the executor bypasses Core's default 16-call ceiling. */
+    readonly maxSteps?: number;
   };
 }
 
@@ -75,7 +78,14 @@ export interface DeliberateNodeSpec {
   };
 }
 
-export type WorkflowNodeSpec = ContextLoadNodeSpec | SampleNodeSpec | TrajectoryNodeSpec | ReflectNodeSpec | DeliberateNodeSpec;
+export type RuntimeNodeSpec = { [T in "CONTEXT.UPDATE" | "CONTEXT.SELECT" | "CONTEXT.COMPRESS" | "INTERACTION.ACT.TOOL" | "INTERACTION.OBSERVE" | "INTERACTION.OUTPUT"]: {
+  readonly id: string;
+  readonly type: T;
+  readonly graphId: string;
+  readonly dependencies: readonly string[];
+  readonly config: { readonly template: string };
+} }["CONTEXT.UPDATE" | "CONTEXT.SELECT" | "CONTEXT.COMPRESS" | "INTERACTION.ACT.TOOL" | "INTERACTION.OBSERVE" | "INTERACTION.OUTPUT"];
+export type WorkflowNodeSpec = ContextLoadNodeSpec | SampleNodeSpec | TrajectoryNodeSpec | ReflectNodeSpec | DeliberateNodeSpec | RuntimeNodeSpec;
 export type NodeProposal = Omit<SampleNodeSpec, "id"> | Omit<TrajectoryNodeSpec, "id"> | Omit<ReflectNodeSpec, "id"> | Omit<DeliberateNodeSpec, "id">;
 
 export interface SearchNodeStatistics {
@@ -107,7 +117,7 @@ export interface LocalGraphSpec {
 export type OutputCondition = {
   readonly sourceNodeId: string;
   readonly path?: readonly string[];
-  readonly operator: "equals" | "not-equals" | "truthy" | "falsy";
+  readonly operator: "equals" | "not-equals" | "truthy" | "falsy" | "has-pending-actions" | "no-pending-actions";
   readonly value?: unknown;
 };
 
@@ -118,6 +128,7 @@ export type GraphTransition =
   | { readonly kind: "switch"; readonly cases: readonly { readonly when: OutputCondition; readonly graphId: string }[]; readonly defaultGraphId?: string };
 
 export interface AgentPlanSpec {
+  readonly organization?: import("./workflow/organization-types.js").OrganizationSpec;
   readonly id: string;
   readonly leafSearchNodeId: string;
   readonly nodes: readonly WorkflowNodeSpec[];
@@ -155,6 +166,30 @@ export interface ScoreEvidence {
 }
 
 export interface CaseResult extends ScoreEvidence {
+  /** Private scorer recovery state; never forwarded to the actor or optimizer. */
+  readonly judgeRecovery?: unknown;
+  readonly providerDiagnostics?: readonly ProviderCallDiagnostics[];
+  readonly providerAttempts?: number;
+  readonly unknownUsageAttempts?: number;
+  readonly failedProviderAttempts?: number;
+  /** Earlier unsuccessful evaluation records, retained during infrastructure recovery. */
+  readonly previousResults?: readonly CaseResult[];
+  /** A numeric score is usable only when valid is true (legacy results also require no error). */
+  readonly valid?: boolean;
+  readonly attempts?: readonly {
+    readonly attempt: number;
+    readonly error: string;
+    readonly failureKind: "timeout" | "provider" | "execution" | "judge";
+    readonly usageKnown: boolean;
+    readonly inputTokens?: number;
+    readonly outputTokens?: number;
+    readonly totalTokens?: number;
+    readonly failedProviderAttempts?: number;
+    readonly providerAttempts?: number;
+    readonly unknownUsageAttempts?: number;
+    readonly providerDiagnostics?: readonly ProviderCallDiagnostics[];
+  }[];
+  readonly usageKnown?: boolean;
   readonly caseId: string;
   readonly latencyMs: number;
   readonly inputTokens: number;
@@ -165,6 +200,15 @@ export interface CaseResult extends ScoreEvidence {
 }
 
 export interface EvaluationSummary {
+  readonly providerAttemptCount?: number;
+  readonly unknownUsageAttemptCount?: number;
+  /** Totals never imply zero cost for requests with missing usage. */
+  readonly tokenUsageStatus?: "complete" | "known-lower-bound";
+  /** False means score/repeatScores are placeholders, never optimizer feedback. */
+  readonly valid?: boolean;
+  readonly validRuns?: number;
+  readonly unknownUsageRuns?: number;
+  readonly failedAttemptCount?: number;
   readonly repeatScores?: readonly number[];
   readonly score: number;
   readonly standardDeviation: number;
@@ -182,6 +226,7 @@ export interface EvaluationSummary {
 }
 
 export interface SearchExperience {
+  readonly organization?: import("./workflow/organization-types.js").OrganizationSpec;
   readonly searchNodeId: string;
   readonly parentSearchNodeId: string | null;
   readonly node: WorkflowNodeSpec;
@@ -191,6 +236,20 @@ export interface SearchExperience {
   readonly failures: readonly Pick<CaseResult, "caseId" | "prediction" | "expected" | "error">[];
 }
 
+/** One logical provider invocation, including each underlying HTTP retry. */
+export interface ProviderCallDiagnostics {
+  readonly finishReason?: string;
+  readonly requestId: number;
+  readonly attempts: number;
+  readonly failedAttempts: number;
+  readonly unknownUsageAttempts: number;
+  readonly usageKnown: boolean;
+  /** Known lower bounds when usageKnown is false. */
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly totalTokens: number;
+}
+
 export interface AgentRunResult {
   readonly answer: string;
   readonly executedNodeIds: readonly string[];
@@ -198,4 +257,9 @@ export interface AgentRunResult {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly totalTokens: number;
+  readonly usageKnown?: boolean;
+  readonly providerAttempts?: number;
+  readonly failedProviderAttempts?: number;
+  readonly unknownUsageAttempts?: number;
+  readonly providerDiagnostics?: readonly ProviderCallDiagnostics[];
 }

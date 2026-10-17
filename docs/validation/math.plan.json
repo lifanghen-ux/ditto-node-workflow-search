@@ -1,0 +1,57 @@
+{
+  "id": "plan-f8f2d18593a84cda",
+  "leafSearchNodeId": "search-001",
+  "nodes": [
+    {
+      "id": "context-load",
+      "type": "CONTEXT.LOAD",
+      "graphId": "prepare",
+      "dependencies": [],
+      "config": {
+        "includeTaskMetadata": true
+      }
+    },
+    {
+      "id": "sample-1",
+      "type": "INFER.REASONING.SAMPLE",
+      "graphId": "solve",
+      "dependencies": [],
+      "config": {
+        "role": "solver",
+        "instruction": "",
+        "generation": {
+          "temperature": 0,
+          "maxTokens": 393216
+        }
+      }
+    }
+  ],
+  "graphs": [
+    {
+      "id": "prepare",
+      "nodeIds": [
+        "context-load"
+      ]
+    },
+    {
+      "id": "solve",
+      "nodeIds": [
+        "sample-1"
+      ]
+    }
+  ],
+  "loop": {
+    "entryGraphId": "prepare",
+    "transitions": {
+      "prepare": {
+        "kind": "next",
+        "graphId": "solve"
+      },
+      "solve": {
+        "kind": "end"
+      }
+    },
+    "maxGraphRuns": 2
+  },
+  "outputNodeId": "sample-1"
+}

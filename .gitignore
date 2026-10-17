@@ -12,3 +12,8 @@ data/*
 !data/README.md
 .DS_Store
 coverage/
+
+.venv/
+.test-tmp/
+
+.integration-check/

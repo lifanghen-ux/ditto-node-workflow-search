@@ -19,9 +19,13 @@ export interface BenchmarkLoadOptions {
   readonly limit?: number;
   readonly seed?: number;
   readonly codeJudge?: CodeJudge;
+  /** Private benchmark worlds/traces; never supplied to the actor or optimizer. */
+  readonly artifactDir?: string;
 }
 
 export interface BenchmarkEvaluationOptions {
+  /** Only supply cases recovered under an identical plan/code/config/data identity. */
+  readonly priorCases?: readonly CaseResult[];
   readonly repeats?: number;
   readonly concurrency?: number;
   readonly retryAttempts?: number;
@@ -50,7 +54,8 @@ export interface BenchmarkAdapter {
 }
 
 export interface PrivateScorer {
-  score(taskId: string, prediction: string): Promise<ScoreEvidence>;
+  score(taskId: string, prediction: string, prior?: CaseResult): Promise<ScoreEvidence>;
+  recoveryData?(taskId: string): unknown;
   expectedLabel(taskId: string): string;
 }
 

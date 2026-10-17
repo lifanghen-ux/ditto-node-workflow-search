@@ -14,7 +14,7 @@ import {
 } from "../domain.js";
 import { GENERATION } from "../protocol.js";
 
-const GRAPH_ORDER = ["prepare", "solve", "refine"] as const;
+const GRAPH_ORDER: readonly string[] = ["prepare", "solve", "refine"];
 const NODE_ID = /^[a-z][a-z0-9-]{0,63}$/;
 const SEARCH_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/i;
 const DELIBERATION_MODES = new Set(["select", "merge", "consensus", "debate"]);
@@ -51,7 +51,6 @@ export function createInitialTrajectoryNode(instruction = "Solve the task carefu
       strategy: "cot",
       options: Object.freeze({ rounds: 1 }),
       generation: GENERATION,
-      maxSteps: 16,
     }),
   });
 }
@@ -134,13 +133,16 @@ export function validateNode(node: WorkflowNodeSpec): void {
     if (node.graphId !== "prepare" || node.dependencies.length !== 0) throw new Error("CONTEXT.LOAD must be dependency-free in prepare");
     return;
   }
+  if (node.type === "CONTEXT.UPDATE" || node.type === "CONTEXT.SELECT" || node.type === "CONTEXT.COMPRESS" || node.type === "INTERACTION.ACT.TOOL" || node.type === "INTERACTION.OBSERVE" || node.type === "INTERACTION.OUTPUT") throw new Error("Interaction nodes require a validated organization plan");
   validateGeneration(node.config.generation);
   if (node.type === "INFER.REASONING.TRAJECTORY") {
     if (node.graphId !== "solve") throw new Error("TRAJECTORY belongs to solve");
     if (!node.config.instruction.trim() || node.config.instruction.length > 4_000) throw new Error("Invalid TRAJECTORY instruction");
     if (!STRATEGIES.includes(node.config.strategy)) throw new Error(`Unsupported trajectory strategy: ${node.config.strategy}`);
     validateStrategyOptions(node.config.strategy, node.config.options);
-    integer(node.config.maxSteps, "maxSteps", 1, 64);
+    if (node.config.maxSteps !== undefined && node.config.maxSteps !== Number.MAX_SAFE_INTEGER) {
+      throw new Error("Per-task trajectory step truncation is disabled by the experiment protocol");
+    }
     return;
   }
   if (node.type === "INFER.REASONING.SAMPLE") {
@@ -258,8 +260,9 @@ function freezeNode<T extends WorkflowNodeSpec>(node: T): T {
 }
 
 function validateGeneration(value: { readonly temperature: number; readonly maxTokens: number }): void {
-  finite(value.temperature, "temperature", 0, 2);
-  integer(value.maxTokens, "maxTokens", 64, 32_768);
+  if (value.temperature !== GENERATION.temperature || value.maxTokens !== GENERATION.maxTokens) {
+    throw new Error(`generation must stay fixed at temperature=${GENERATION.temperature} and maxTokens=${GENERATION.maxTokens}`);
+  }
 }
 
 function validateStrategyOptions(strategy: StrategyName, options: Readonly<Record<string, number>>): void {
@@ -278,10 +281,6 @@ function validateStrategyOptions(strategy: StrategyName, options: Readonly<Recor
   for (const required of Object.keys(defaultStrategyOptions(strategy))) {
     if (!(required in options)) throw new Error(`Missing ${strategy} option: ${required}`);
   }
-}
-
-function finite(value: number, name: string, minimum: number, maximum: number): void {
-  if (!Number.isFinite(value) || value < minimum || value > maximum) throw new Error(`${name} must be in [${minimum}, ${maximum}]`);
 }
 
 function integer(value: number, name: string, minimum: number, maximum: number): void {
