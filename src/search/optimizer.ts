@@ -35,6 +35,9 @@ export interface SearchCallbacks {
 }
 
 export interface SearchResumeState {
+  readonly nodeConstruction?: import("./node-construction.js").NodeConstructionState;
+  readonly nodeExpansionRejections?: readonly import("./node-expansion-proposer.js").ExpansionRejection[];
+  readonly consecutiveProposalFailures?: number;
   readonly schemaVersion: 1;
   readonly nodes: readonly SearchTreeNode[];
   readonly experiences: readonly SearchExperience[];
@@ -52,7 +55,8 @@ export interface SearchResult {
   readonly bestLeaf: SearchTreeNode;
   readonly bestPlan: AgentPlanSpec;
   readonly bestPath: readonly SearchTreeNode[];
-  readonly stoppedBecause: "max-rounds" | "converged";
+  readonly stoppedBecause: "max-rounds" | "converged" | "time-budget";
+  readonly timeBudgetStop?: import('./time-budget.js').TimeBudgetStop;
 }
 
 export interface NodeWorkflowSearchOptions {

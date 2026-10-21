@@ -13,9 +13,18 @@ import { loadDirectedResume } from "./run/directed-resume.js";
 import { WorkflowExecutor } from "./workflow/executor.js";
 import { GENERATION, PROTOCOL } from "./protocol.js";
 import { assertBaselinePromptProfile, baselinePromptProfile, baselinePrompts } from "./benchmark/baseline-prompts.js";
+import { runCodeSearch } from "./code-search.js";
 
 async function main(): Promise<void> {
   const options = parseArguments(process.argv.slice(2));
+  if (options.command === "search" && (options.dataset === "humaneval" || options.dataset === "mbpp"||options.dataset==='automationbench')) {
+    const source = process.env.CODE_SEARCH_SOURCE ?? "official";
+    if (source !== "official" && source !== "ark-plan") throw Error("CODE_SEARCH_SOURCE must be official or ark-plan");
+    await runCodeSearch({ dataset: options.dataset, mode: "search", source,
+      directory: options.resumeDir ?? join(options.outputRoot, options.dataset, new Date().toISOString().replace(/[:.]/g, "-")),
+      dataDir: options.dataDir, dockerImage: options.dockerImage, newCandidates: options.rounds,repeats:options.repeats,concurrency:Math.min(options.searchProviderConcurrency,options.searchConcurrency) });
+    return;
+  }
   const provider = Object.freeze({ ...loadProviderSettings(),
     concurrency: options.command === "search" ? options.searchProviderConcurrency : options.testProviderConcurrency });
   const experiment = createExperimentRuntime(provider);
@@ -287,6 +296,7 @@ function isCodeDataset(dataset: DatasetName): dataset is "humaneval" | "mbpp" {
 }
 
 function metricProfile(dataset: DatasetName): string {
+  if(dataset==='automationbench')throw Error('Automation requires the staged-workflow entry');
   switch (dataset) {
     case "drop": return "aflow-drop-token-f1-v2";
     case "humaneval": return "docker-private-tests-pass-at-1-v1";
@@ -297,6 +307,7 @@ function metricProfile(dataset: DatasetName): string {
 }
 
 function taskGoal(dataset: DatasetName): string {
+  if(dataset==='automationbench')throw Error('Automation requires the staged-workflow entry');
   const goal = {
     drop: "Search a compact Ditto Node path that answers DROP reading-comprehension questions with high token F1.",
     humaneval: "Search a compact Ditto Node path that produces correct HumanEval Python functions under private tests.",
@@ -309,6 +320,7 @@ function taskGoal(dataset: DatasetName): string {
 }
 
 function initialInstruction(dataset: DatasetName): string {
+  if(dataset==='automationbench')throw Error('Automation requires the staged-workflow entry');
   switch (dataset) {
     case "drop": return baselinePrompts(dataset)!.agent;
     case "humaneval": return "Implement the requested Python function correctly for general inputs. Return one complete Python code block and no tests.";
