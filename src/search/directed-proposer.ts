@@ -1,3 +1,6 @@
+import { optimizerProfile, OPTIMIZED_PROMPT } from "./optimizer-profile.js";
+import { buildWorkflowFeedback } from "./workflow-feedback.js";
+import type { BenchmarkTask } from "../domain.js";
 import { graph, type DittoRuntime } from "@codesoul-co/ditto/runtime";
 import type { ModelConfig, NodeResult, SampleOutput } from "@codesoul-co/ditto/worker/infer";
 import { createHash } from "node:crypto";
@@ -16,15 +19,16 @@ export interface WorkflowProposal {
   readonly nodes: readonly WorkflowNodeSpec[];
 }
 export interface WorkflowProposalRequest {
+  readonly publicTasks?: readonly BenchmarkTask[];
   readonly dataset?: DatasetName;
   readonly taskGoal: string;
   readonly history: readonly DirectedCandidate[];
   readonly validate?: (proposal: WorkflowProposal) => void;
 }
 
-const proposalGraph = graph<{ model: ModelConfig; request: string }>("optimizer-directed-workflow")
+const proposalGraph = graph<{ model: ModelConfig; request: string; systemPrompt: string }>("optimizer-directed-workflow")
   .node("proposal", "INFER.REASONING.SAMPLE", [], input => ({ model: input.model, generation: GENERATION,
-    messages: [{ role: "system", content: DIRECTED_OPTIMIZER_PROMPT }, { role: "user", content: input.request }],
+    messages: [{ role: "system", content: input.systemPrompt }, { role: "user", content: input.request }],
     metadata: { experiment: DIRECTED_SEARCH_POLICY, role: "optimizer" } }));
 
 export const DIRECTED_OPTIMIZER_PROMPT = `Design the next legal Ditto workflow using the complete public workflow history and validation feedback. You, the optimizer, decide what to explore. No application-selected parent, Top-K sampling, score-weighted random selection, or append-only mutation is used.
@@ -47,22 +51,26 @@ export class DirectedWorkflowProposer {
   readonly #model: ModelConfig;
   constructor(runtime: DittoRuntime, provider: string, model: string) { this.#runtime = runtime; this.#model = { provider, model }; }
   async propose(request: WorkflowProposalRequest): Promise<WorkflowProposal> {
+    const profile = optimizerProfile();
+    const evidence = profile === "feedback-v3" ? buildWorkflowFeedback(request.history, request.publicTasks ?? []) : undefined;
     let repair = "";
+    let rejectedProposal: string | undefined;
     for (let attempt = 1; attempt <= 3; attempt++) {
-      const result = await this.#runtime.run(proposalGraph, { model: this.#model, request: JSON.stringify({
+      const result = await this.#runtime.run(proposalGraph, { model: this.#model, systemPrompt: optimizerProfile() === "baseline" ? DIRECTED_OPTIMIZER_PROMPT : OPTIMIZED_PROMPT, request: JSON.stringify({
         task: request.taskGoal, checkerContract: checkerContract(request.dataset),
-        workflowHistory: request.history.map(candidate => ({ id: candidate.id, status: candidate.status, nodes: candidate.plan.nodes,
+        workflowHistory: request.history.map((candidate, index) => ({ id: candidate.id, status: candidate.status, nodes: candidate.plan.nodes,
+          ...(evidence ? { feedback: evidence[index] } : {}),
           ...(candidate.status === "valid" ? { score: candidate.evaluation!.score, standardDeviation: candidate.evaluation!.standardDeviation,
             predictions: candidate.evaluation!.results.filter(row => row.score < 1).slice(0, 3).map(row => ({ caseId: row.caseId, prediction: row.prediction })) }
             : { failureCounts: candidate.failureCounts }), rationale: candidate.rationale })),
-        ...(repair ? { previousProposalError: repair } : {}),
+        ...(repair ? { previousProposalError: repair, ...(profile === "feedback-v3" ? { rejectedProposal } : {}) } : {}),
       }) });
       const sampled = result.proposal as NodeResult<SampleOutput>;
       if (sampled.status !== "success" || !sampled.output) throw new Error(`Optimizer provider failed: ${sampled.error?.message ?? sampled.status}`);
       try {
         const proposal = parseWorkflowProposal(sampled.output.message.content, request.dataset);
         request.validate?.(proposal); return proposal;
-      } catch (error) { repair = error instanceof Error ? error.message : String(error); }
+      } catch (error) { repair = error instanceof Error ? error.message : String(error); rejectedProposal = typeof sampled.output.message.content === "string" ? sampled.output.message.content : JSON.stringify(sampled.output.message.content); }
     }
     throw new ProposalValidationError(`Optimizer could not propose a legal workflow: ${repair}`);
   }

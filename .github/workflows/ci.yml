@@ -17,5 +17,13 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements-local.txt
       - run: npm ci
       - run: npm run check
+        env:
+          DITTO_PROVIDER_PYTHON: python
+      - run: npm run test:generated
+      - run: python scripts/provider_bridge_test.py

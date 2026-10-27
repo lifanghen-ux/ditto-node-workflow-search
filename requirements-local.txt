@@ -1,0 +1,10 @@
+openai==1.82.0
+httpx[socks]==0.28.1
+sympy==1.14.0
+regex==2024.11.6
+antlr4-python3-runtime==4.11.1
+aiofiles==24.1.0
+pandas==2.2.3
+tenacity==9.1.2
+tqdm==4.67.1
+Pillow==11.3.0

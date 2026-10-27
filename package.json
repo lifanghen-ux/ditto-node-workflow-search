@@ -15,10 +15,14 @@
     "check": "npm run typecheck && npm test",
     "test:rounds": "node --env-file-if-exists=.env dist/round-test-runner.js",
     "search:drop": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset drop",
+    "experiment:drop": "powershell -NoProfile -File scripts/run-generated-search.ps1 -Representation B",
+    "experiment:drop:a": "powershell -NoProfile -File scripts/run-generated-search.ps1 -Representation A",
+    "test:generated": "node --test scripts/generated-workflow-a.test.mjs scripts/generated-workflow-b.test.mjs scripts/generated-infer-contract.test.mjs scripts/generated-search-recovery.test.mjs scripts/generated-search-feedback.test.mjs scripts/generated-small-batch-policy.test.mjs scripts/expand-frozen-validation.test.mjs scripts/complete-small-batch-candidate.test.mjs scripts/prepare-user-prompt-run.test.mjs",
     "search:humaneval": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset humaneval",
     "search:mbpp": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset mbpp",
     "search:gsm8k": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset gsm8k",
-    "search:math": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset math"
+    "search:math": "npm run build && node --env-file-if-exists=.env dist/cli.js search --dataset math",
+    "experiment:user-prompts": "powershell -NoProfile -File scripts/run-user-prompts.ps1"
   },
   "dependencies": {
     "@codesoul-co/ditto": "0.1.1"

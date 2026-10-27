@@ -193,14 +193,18 @@ function expectedLabel(scorer: PrivateScorer, taskId: string): string {
 async function mapLimit<T, R>(values: readonly T[], concurrency: number, operation: (value: T) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(values.length);
   let cursor = 0;
+  let failed = false;
+  let failure: unknown;
   async function worker(): Promise<void> {
-    while (true) {
+    while (!failed) {
       const index = cursor++;
       if (index >= values.length) return;
-      results[index] = await operation(values[index]!);
+      try { results[index] = await operation(values[index]!); }
+      catch (error) { if (!failed) { failed = true; failure = error; } }
     }
   }
   await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, worker));
+  if (failed) throw failure;
   return results;
 }
 

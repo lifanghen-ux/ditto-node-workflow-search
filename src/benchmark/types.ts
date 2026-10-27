@@ -67,6 +67,8 @@ export interface LoadedBenchmark {
   readonly tasks: readonly BenchmarkTask[];
   readonly identity?: BenchmarkIdentity;
   evaluate(runner: BenchmarkRunner, options?: BenchmarkEvaluationOptions): Promise<EvaluationSummary>;
+  /** Explicit development search subset; does not change the formal full-split evaluator. */
+  evaluateSearchSubset?(taskIds: readonly string[], runner: BenchmarkRunner, options?: BenchmarkEvaluationOptions): Promise<EvaluationSummary>;
 }
 
 export interface BenchmarkAdapter {

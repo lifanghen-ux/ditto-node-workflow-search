@@ -12,3 +12,7 @@ data/*
 !data/README.md
 .DS_Store
 coverage/
+.venv/
+work/
+outputs/
+output/

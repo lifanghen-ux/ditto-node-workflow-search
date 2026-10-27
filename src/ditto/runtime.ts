@@ -25,6 +25,8 @@ export interface ExperimentRuntimeOptions {
   readonly memory?: MemoryResources;
   /** Application-owned provider override, also useful for deterministic checks. */
   readonly provider?: ModelProvider;
+  /** Host budget admission before each model invocation, including internal Node calls and format repairs. */
+  readonly beforeProviderCall?: () => void | Promise<void>;
 }
 
 /** npm Graph/Loop/Workers; injected transport uses AFlow's installed SDK. */
@@ -42,7 +44,7 @@ export function createExperimentRuntime(settings: ProviderSettings, options: Exp
     providerOptions: EXPERIMENT_PROVIDER_OPTIONS, timeoutMs: nodeDeadline,
   });
   const providerName = "deepseek";
-  const provider = limitProviderConcurrency(applyModelProfile(http, profile), settings.concurrency);
+  const provider = limitProviderConcurrency(admitProviderCalls(applyModelProfile(http, profile), options.beforeProviderCall), settings.concurrency);
   const budget = budgetOutputBoundary();
   const checked = budget.provider(withReflectionFormatRepair(provider, async event => {
     if (process.env.DITTO_PROVIDER_LOG) await appendFile(process.env.DITTO_PROVIDER_LOG, JSON.stringify({ at: new Date().toISOString(), ...event }) + "\n", "utf8");
@@ -65,6 +67,15 @@ export function createExperimentRuntime(settings: ProviderSettings, options: Exp
   return Object.freeze({ runtime, provider, providerName, model: settings.model,
     async close() { try { await runtime.close(); } finally { await transport?.close(); } },
   });
+}
+
+/** Called inside the concurrency slot so queued calls cannot bypass a newly exhausted budget. */
+export function admitProviderCalls(provider: ModelProvider, before?: () => void | Promise<void>): ModelProvider {
+  if (!before) return provider;
+  return {
+    async invoke(input, options) { await before(); return provider.invoke(input, options); },
+    ...(provider.stream ? { async *stream(input, options) { await before(); yield* provider.stream!(input, options); } } : {}),
+  };
 }
 
 /** Enforce the same policy across SAMPLE, TRAJECTORY, optimizer and stream calls. */
