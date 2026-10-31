@@ -4,6 +4,7 @@ import type {ModuleShape} from '../coding/module.js';
 import {validateModuleSyntax} from '../coding/source-guard.js';
 import {parseExpressionAt} from 'acorn';
 import {validateBinding,bindingReferences,validatePath} from './bindings.js';
+import {AUTOMATION_TOOLS} from '../benchmark/automation.js';
 
 export const GRAPH_AGENT_POLICY='ditto-unified-graph-agent-v1';
 export const NODE_TYPES=['CONTEXT.LOAD','CONTEXT.SELECT','CONTEXT.UPDATE','CONTEXT.COMPRESS',
@@ -78,7 +79,7 @@ export function validateSource(v:any):void{
 const fields:Record<NodeType,string[]>={
  'CONTEXT.LOAD':['sources'],'CONTEXT.SELECT':['context','query','limit','maxTokens'],'CONTEXT.UPDATE':['context','add','removeIds'],'CONTEXT.COMPRESS':['context','maxItems','maxTokens'],
  'MEMORY.WRITE':['content'],'MEMORY.GET':['ids'],'MEMORY.SEARCH':['query','limit'],'MEMORY.QUERY':['filter','limit'],'MEMORY.UPDATE':['ids','content'],'MEMORY.DELETE':['ids'],
- 'INFER.REASONING.SAMPLE':['instruction','user','evidence','outputFormat'],'INFER.REASONING.TRAJECTORY':['instruction','user','evidence','strategy','options','maxSteps','outputFormat'],
+ 'INFER.REASONING.SAMPLE':['instruction','user','evidence','outputFormat','firstUser'],'INFER.REASONING.TRAJECTORY':['instruction','user','evidence','strategy','options','maxSteps','outputFormat'],
  'INFER.REASONING.REFLECT':['target','mode','criteria','feedback','instruction','user'],'INFER.REASONING.DELIBERATE':['candidates','mode','instruction','user'],
  'INFER.CACHE.LOOKUP':['key'],'INFER.CACHE.WRITE':['key','value','ttlMs'],'INFER.CACHE.INVALIDATE':['key'],
  'INTERACTION.ACT.TOOL':['tool','arguments'],'INTERACTION.OBSERVE':['result'],'RETRIEVAL.SEARCH':['query','target','limit']};
@@ -88,6 +89,7 @@ function validateNode(n:DefinitionNode,path:string):void{
  keys(n,['id','type','dependencies','config'],path);id(n.id);check(NODE_TYPES.includes(n.type),'Unsupported Ditto node type');
  check(Array.isArray(n.dependencies)&&n.dependencies.every(d=>typeof d==='string')&&new Set(n.dependencies).size===n.dependencies.length,'Invalid dependencies');
  const c=n.config;keys(c,fields[n.type],`${path}.config`);
+ if(c.firstUser!==undefined)validateSource(c.firstUser);
  if(c.instruction!==undefined)text(c.instruction,'instruction',true);if(c.user!==undefined)validateSource(c.user);if(c.outputFormat!==undefined)check(['text','json'].includes(c.outputFormat),'outputFormat must be text or json');
  switch(n.type){
   case'CONTEXT.LOAD':check(Array.isArray(c.sources)&&c.sources.length>0&&c.sources.length<=64,'LOAD sources required');c.sources.forEach(validateSource);break;
@@ -147,7 +149,7 @@ export function validateDefinition(input:unknown):GraphDefinition{
  keys(d.output,['nodeId','view','answer']);const outputIds:string[]=[];
  if(Object.hasOwn(d.output,'answer')){check(d.version===2,'Native output binding requires version 2');check(d.output.nodeId===undefined&&d.output.view===undefined,'Choose answer binding OR nodeId/view');validateSource(d.output.answer);outputIds.push(...bindingReferences(d.output.answer).filter(r=>!r.optional).map(r=>r.nodeId),...sources(d.output.answer).filter(s=>s.from==='node').map(s=>(s as Extract<SemanticSource,{from:'node'}>).nodeId));for(const exit of exits)references(d.output.answer,exit.id);}
  else{check(d.output.view==='answer','Final output must be answer view');const output=nodes.get(d.output.nodeId!);check(output&&output.node.type.startsWith('INFER.REASONING.'),'Output must be an Infer node');outputIds.push(d.output.nodeId!);for(const exit of exits)check(dom.get(exit.id)!.has(output!.graph),'Output node may be skipped on an ending route');}
- const builtins=['bounded_arithmetic','literal_text_find'];
+ const builtins=['bounded_arithmetic','literal_text_find',...AUTOMATION_TOOLS];
  if(d.tools!==undefined){check(Array.isArray(d.tools)&&d.tools.length<=6,'At most six tools','tools');const names=new Set<string>();for(const[i,t]of d.tools.entries())atDefinitionPath(`tools[${i}]`,()=>{
   const path=`tools[${i}]`;keys(t,['name','description','inputSchema','executeSource'],path);
   check(!builtins.includes(t.name),'Cannot redefine a host tool',`${path}.name`,'Remove this generated tool declaration and call the already registered host tool through ACT.TOOL.');
