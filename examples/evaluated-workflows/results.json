@@ -1,0 +1,63 @@
+{
+  "model": "deepseek-flash",
+  "split": "Search",
+  "repeats": 1,
+  "date": "2026-11-03",
+  "results": [
+    {
+      "dataset": "drop",
+      "source": "drop.mjs",
+      "runId": "20261103-prompt-pool-v1-drop",
+      "candidateId": "seed-a",
+      "metric": "F1",
+      "examples": 200,
+      "score": 0.9026180510310945,
+      "providerAttemptCount": 204,
+      "totalTokens": 207202
+    },
+    {
+      "dataset": "humaneval",
+      "source": "humaneval.mjs",
+      "runId": "20261103-prompt-pool-v1-humaneval",
+      "candidateId": "generated-001",
+      "metric": "pass@1",
+      "examples": 33,
+      "score": 0.9393939393939394,
+      "providerAttemptCount": 66,
+      "totalTokens": 60361
+    },
+    {
+      "dataset": "mbpp",
+      "source": "mbpp.mjs",
+      "runId": "20261103-prompt-pool-v1-mbpp",
+      "candidateId": "seed-a",
+      "metric": "pass@1",
+      "examples": 86,
+      "score": 0.8023255813953488,
+      "providerAttemptCount": 173,
+      "totalTokens": 105891
+    },
+    {
+      "dataset": "automationbench",
+      "source": "automationbench.mjs",
+      "runId": "20261103-prompt-pool-v5-automationbench",
+      "candidateId": "seed-a",
+      "metric": "accuracy",
+      "examples": 200,
+      "score": 0.985,
+      "providerAttemptCount": 1647,
+      "totalTokens": 4270954
+    },
+    {
+      "dataset": "bfcl",
+      "source": "bfcl.mjs",
+      "runId": "20261103-prompt-pool-v5-bfcl-complete",
+      "candidateId": "seed-a",
+      "metric": "accuracy",
+      "examples": 200,
+      "score": 0.76,
+      "providerAttemptCount": 2054,
+      "totalTokens": 13591046
+    }
+  ]
+}

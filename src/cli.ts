@@ -1,3 +1,4 @@
+import { optimizerProfile } from "./search/optimizer-profile.js";
 import { CaseRecovery, evaluationCodeHash } from "./run/case-recovery.js";
 import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
@@ -44,6 +45,7 @@ async function search(
   const restored = options.resumeDir ? await loadDirectedResume(options.resumeDir, options.resumeRound!, options.dataset) : undefined;
   if (restored) {
     const prior = restored.manifest;
+    if ((prior.optimizerProfile ?? "baseline") !== optimizerProfile()) throw new Error("Resume optimizer profile differs from frozen experiment");
     if (JSON.stringify(prior.timeBudget) !== JSON.stringify(options.timeBudget)) throw Error("Resume time budget differs; a new run is required");
     assertBaselinePromptProfile(options.dataset, prior.promptProfile);
     const priorSearch = prior.search as Record<string, unknown>;
@@ -59,6 +61,7 @@ async function search(
   }
   const manifest: Record<string, unknown> = {
     schemaVersion: 2,
+    optimizerProfile: optimizerProfile(),
     status: "searching",
     createdAt: new Date().toISOString(),
     dataset: options.dataset,
@@ -151,7 +154,7 @@ async function search(
     const result = await searchDirectedWorkflows({
       dataset: options.dataset, maxValidEvaluations: options.rounds, patience: options.patience,
       taskGoal: taskGoal(options.dataset), initialInstruction: initialInstruction(options.dataset),
-      propose: request => proposer.propose(request), evaluate,
+      propose: request => proposer.propose({ ...request, publicTasks: loaded.tasks }), evaluate,
       ...(restored ? { resume: restored.state } : {}),
       save: state => store.saveDirectedState(state),
       async candidate(candidate, state) {

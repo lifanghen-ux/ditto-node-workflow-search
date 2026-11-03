@@ -29,6 +29,9 @@ export interface ExperimentRuntimeOptions {
   readonly workers?: readonly WorkerDefinition[];
   readonly connectTimeoutMs?: number;
   readonly beforeProviderCall?: (input: SampleInput) => void | Promise<void>;
+  readonly prepareProviderInput?: (input: SampleInput) => SampleInput | Promise<SampleInput>;
+  /** Observe errors before a Worker converts them to failed results. */
+  readonly onProviderError?: (error: unknown) => void;
   readonly afterProviderCall?: (event: ProviderInvocationEvent) => void | Promise<void>;
   readonly reflectionEvent?: (event: ReflectionRepairEvent) => void | Promise<void>;
   readonly timeBudget?: TimeBudgetPolicy;
@@ -66,7 +69,10 @@ export function createExperimentRuntime(settings: ProviderSettings, options: Exp
   });
   const providerName = "deepseek";
   const provider = options.managedProvider && options.provider ? options.provider
-    : limitProviderConcurrency(withProviderLifecycle(withRequestTimeBudget(applyModelProfile(http, profile), options.timeBudget), options), settings.concurrency);
+    : limitProviderConcurrency(admitProviderCalls(
+      withProviderLifecycle(withRequestTimeBudget(applyModelProfile(http, profile), options.timeBudget), options),
+      undefined, options.prepareProviderInput, options.onProviderError,
+    ), settings.concurrency);
   const budget = budgetOutputBoundary();
   const checked = budget.provider(withReflectionFormatRepair(provider, async event => {
     await options.reflectionEvent?.(event);
@@ -91,6 +97,21 @@ export function createExperimentRuntime(settings: ProviderSettings, options: Exp
   return Object.freeze({ runtime, provider, providerName, model: settings.model,...(options.reflectionEvent?{reflectionEvent:options.reflectionEvent}:{}),
     async close() { try { await runtime.close(); } finally { await transport?.close(); } },
   });
+}
+
+/** Called inside the concurrency slot so queued calls cannot bypass a newly exhausted budget. */
+export function admitProviderCalls(provider: ModelProvider, before?: () => void | Promise<void>, prepare?: ExperimentRuntimeOptions["prepareProviderInput"], onError?: ExperimentRuntimeOptions["onProviderError"]): ModelProvider {
+  if (!before && !prepare && !onError) return provider;
+  return {
+    async invoke(input, options) {
+      try { await before?.(); return await provider.invoke(prepare ? await prepare(input) : input, options); }
+      catch (error) { onError?.(error); throw error; }
+    },
+    ...(provider.stream ? { async *stream(input, options) {
+      try { await before?.(); yield* provider.stream!(prepare ? await prepare(input) : input, options); }
+      catch (error) { onError?.(error); throw error; }
+    } } : {}),
+  };
 }
 
 /** Admission occurs after the concurrency queue; every nested native/repair call is charged. */

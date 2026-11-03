@@ -51,6 +51,10 @@ DROP retains the fixed 200/800 validation/Test split and original scoring. A new
 
 Manifests freeze protocol, prompts, source/compiled/environment identity and selection. Proposals, repairs, actual requests, raw node evidence, stage decisions and costs are saved. Resume rejects changed identities; changed artifacts cannot reuse older successful cases.
 
+## Generated A experiments
+
+`npm run experiment:a` lets the model generate complete Graph/Loop modules, with dataset-specific prompt guidance and single-pass evaluation. See [setup and recovery](docs/a-evolution.md) and [saved workflow modules](examples/evaluated-workflows). This entry is independent of the unified search above.
+
 ## Historical controllers
 
 `search:drop:legacy` keeps the original snapshot CLI. `experiment:legacy:a` and `experiment:legacy:small` keep historical diagnostic controllers. Their protocols and old scores are separate from the unified defaults.

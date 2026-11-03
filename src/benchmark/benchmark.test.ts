@@ -5,11 +5,25 @@ import { join } from "node:path";
 import test from "node:test";
 import type { AgentRunResult } from "../domain.js";
 import { humanevalAdapter } from "./code-adapters.js";
-import { extractPythonCandidate } from "./docker-python-judge.js";
+import { extractPythonCandidate, dockerCommand } from "./docker-python-judge.js";
 import { evaluateTasks } from "./evaluator.js";
 import { stratifiedSample } from "./sampling.js";
 import { scoreCompetitionMathAnswer, scoreDropAnswer, scoreGsm8kAnswer } from "./text-scores.js";
 import type { CodeJudge } from "./types.js";
+
+test("WSL Docker transport preserves judge arguments", () => {
+  const original = process.env.CODE_JUDGE_WSL_DISTRO;
+  try {
+    delete process.env.CODE_JUDGE_WSL_DISTRO;
+    const args = ["run", "--network", "none", "-i", "python:3.13-slim", "python", "-I", "-"];
+    assert.deepEqual(dockerCommand(args), { file: "docker", args });
+    process.env.CODE_JUDGE_WSL_DISTRO = "DittoBench";
+    assert.deepEqual(dockerCommand(args), { file: "wsl.exe", args: ["--distribution", "DittoBench", "--user", "root", "--exec", "docker", ...args] });
+  } finally {
+    if (original === undefined) delete process.env.CODE_JUDGE_WSL_DISTRO;
+    else process.env.CODE_JUDGE_WSL_DISTRO = original;
+  }
+});
 
 test("text benchmark scorers match their declared semantics", () => {
   assert.equal(scoreDropAnswer("The red fox|fox", "a fox").score, 1);
@@ -30,6 +44,16 @@ test("candidate extraction prefers a fenced complete entry point", () => {
   assert.match(extracted, /^def answer/);
   const completion = extractPythonCandidate("if x:\n    return x\nreturn 0", "def answer(x):", "answer");
   assert.equal(completion, "def answer(x):\n    if x:\n        return x\n    return 0");
+});
+
+test("MBPP extraction never prepends the natural-language task to executable code", () => {
+  const code = "def multiply_int(x, y):\n    return x * y";
+  const prompt = "Write a function to multiply two integers.\n\ndef multiply_int(x, y):";
+  assert.equal(extractPythonCandidate(code, prompt, "multiply_int", "mbpp"), code);
+  assert.equal(extractPythonCandidate("```python\n" + code + "\n```", prompt, "multiply_int", "mbpp"), code);
+  const scaffold = "import math\n\ndef answer(x):";
+  assert.equal(extractPythonCandidate("def answer(x):\n    return math.sqrt(x)", scaffold, "answer", "humaneval"),
+    "import math\n\ndef answer(x):\n    return math.sqrt(x)");
 });
 
 test("code adapter keeps tests private and delegates to the injected judge", async () => {
@@ -62,6 +86,14 @@ test("code adapter keeps tests private and delegates to the injected judge", asy
     const summary = await loaded.evaluate(async () => result);
     assert.equal(summary.score, 1);
     assert.match(observedTest, /candidate\(1\)/);
+    let calls = 0;
+    const subset = await loaded.evaluateSearchSubset!([loaded.tasks[0]!.id], async () => { calls++; return result; }, { repeats: 1 });
+    assert.equal(subset.score, summary.score);
+    assert.equal(calls, 1);
+    await loaded.evaluateSearchSubset!([loaded.tasks[0]!.id], async () => { calls++; return result; }, { repeats: 1, priorCases: subset.results });
+    assert.equal(calls, 1, "Completed cases should be reused at the next stage");
+    assert.throws(() => loaded.evaluateSearchSubset!([loaded.tasks[0]!.id, loaded.tasks[0]!.id], async () => result), /distinct/);
+    assert.throws(() => loaded.evaluateSearchSubset!(["unknown"], async () => result), /Unknown/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

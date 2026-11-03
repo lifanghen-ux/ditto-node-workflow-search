@@ -1,0 +1,129 @@
+{
+  "representation": "B",
+  "proposal": {
+    "referenceCandidateId": null,
+    "rationale": "Previously model-generated workflow, supplied only as an optional starting artifact; reevaluate from scratch after replacing prompts.",
+    "definition": {
+      "schemaVersion": 1,
+      "id": "drop-passage-answer",
+      "nodes": [
+        {
+          "id": "extract-evidence",
+          "type": "INFER.REASONING.SAMPLE",
+          "graphId": "evidence",
+          "dependencies": [],
+          "inputBindings": {
+            "messages": [
+              {
+                "role": "system",
+                "content": "You extract evidence from a passage to answer a question. Use only the supplied passage text. Work in this order.\n\n1. TYPE: Identify the question type (arithmetic difference/sum, percentage-of, set selection, entity comparison, count, rate lookup, multi-value enumeration).\n\n2. FACTS: List the specific numbers, entities and sentences from the passage that the question needs. For a set question, list every candidate with its value and check each against the threshold. For a multi-value question ('two field goals', 'what distances', plural entities), list every distinct qualifying value.\n\n3. EXPRESSION: If arithmetic is required, write the exact expression (e.g. 27.40 - 26.40) and compute it. Watch signs and decimals.\n\n4. RESULT: The final answer already in the exact surface form the question expects. Rules:\n- Exactly ONE value or ONE complete entity/value list. Never a range, never 'A or B', never a parenthetical alternative, never an equation.\n- If the question asks for a DIFFERENCE between two percentages — including phrasings like 'how many more ... by percent', 'by what percent', 'how many percentage points higher' — output the bare numeric difference with NO '%' sign (e.g. 0.5, 1.0).\n- If the question asks for a single rate/percentage VALUE directly ('what was the rate in 2004', 'what percent of people were X'), output the number followed by '%' (e.g. 53%).\n- For counts ('how many field goals', 'how many years', 'how many people') output just the number, no unit word.\n- For multi-value questions asking for several items ('two field goals', 'what distances'), output every distinct qualifying value comma-separated in one answer (e.g. '29, 40, 35, 26'), not a single repeated value.\n- For entity / set questions, output the entity name(s) using the passage's own wording verbatim, not abbreviations or en-dash ranges. Include every qualifying entity, comma-separated, in one answer.\n\nOutput exactly these lines: TYPE, FACTS, EXPRESSION (if any), RESULT."
+              },
+              {
+                "role": "user",
+                "content": {
+                  "concat": [
+                    "Question and passage:\n",
+                    {
+                      "ref": [
+                        "task",
+                        "prompt"
+                      ]
+                    },
+                    "\n\nOutput instruction:\n",
+                    {
+                      "ref": [
+                        "task",
+                        "outputInstruction"
+                      ]
+                    },
+                    "\n\nProduce the structured evidence note."
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "draft-answer",
+          "type": "INFER.REASONING.SAMPLE",
+          "graphId": "answer",
+          "dependencies": [],
+          "inputBindings": {
+            "messages": [
+              {
+                "role": "system",
+                "content": "You output the final answer. The evidence note contains a RESULT line that is already the canonical answer in the correct surface form. Copy that RESULT verbatim as your entire answer: do not recompute, do not change units, do not add explanation, do not offer alternatives, do not add a range. If RESULT is missing or empty, derive one concise answer from the passage and evidence. Preserve signs, decimals and entity names. For set or multi-value questions output the complete list in one answer."
+              },
+              {
+                "role": "user",
+                "content": {
+                  "concat": [
+                    "Question and passage:\n",
+                    {
+                      "ref": [
+                        "task",
+                        "prompt"
+                      ]
+                    },
+                    "\n\nEvidence:\n",
+                    {
+                      "ref": [
+                        "nodes",
+                        "extract-evidence",
+                        "message",
+                        "content"
+                      ]
+                    },
+                    "\n\nFinal answer:"
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "graphs": [
+        {
+          "id": "evidence",
+          "nodeIds": [
+            "extract-evidence"
+          ]
+        },
+        {
+          "id": "answer",
+          "nodeIds": [
+            "draft-answer"
+          ]
+        }
+      ],
+      "loop": {
+        "entryGraphId": "evidence",
+        "transitions": {
+          "evidence": {
+            "kind": "next",
+            "graphId": "answer"
+          },
+          "answer": {
+            "kind": "end"
+          }
+        },
+        "maxGraphRuns": 2
+      },
+      "output": {
+        "answer": {
+          "ref": [
+            "nodes",
+            "draft-answer",
+            "message",
+            "content"
+          ]
+        }
+      }
+    }
+  },
+  "origin": {
+    "kind": "previous-model-generated",
+    "candidateId": "generated-001",
+    "historicalScoresReused": false
+  }
+}

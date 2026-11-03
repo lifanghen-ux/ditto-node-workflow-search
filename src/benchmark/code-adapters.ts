@@ -102,7 +102,7 @@ function loadedCode(
   const scorer: PrivateScorer = {
     async score(taskId, prediction): Promise<ScoreEvidence> {
       const reference = referenceFor(references, taskId, dataset);
-      const candidate = extractPythonCandidate(prediction, reference.publicPrompt, reference.entryPoint);
+      const candidate = extractPythonCandidate(prediction, reference.publicPrompt, reference.entryPoint, dataset);
       const judged = await judge.judge({
         dataset,
         taskId,

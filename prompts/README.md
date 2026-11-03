@@ -11,3 +11,11 @@ Retrieval's purpose, native schema and failure/permission semantics are fixed. A
 Each run freezes prompt versions/hashes and actual requests. Prompt, definition or helper changes create a new candidate identity requiring new evaluation. Source edits cannot alter a prior frozen run. Gold answers, private assertions and Test feedback are excluded from optimizer messages.
 
 `npm run audit:prompts` checks these boundaries offline and makes no provider network calls.
+
+## Generated workflow experiments
+
+The standalone A experiment uses `expanded-search-prompts.zh-CN.md` for its generation contract, `a-evolution.zh-CN.md` for evolution guidance, and `dataset-initial-prompts.zh-CN.json` for task-specific capability reminders. These do not replace the canonical unified optimizer above.
+
+Run `npm run experiment:a -- -Dataset drop -Fresh` after preparing the dependencies described in [the A experiment guide](../docs/a-evolution.md). Each task is evaluated once; generated A code is executed by Ditto Graph/Loop/Workers. The B executor remains available for historical runs.
+
+`generated-search-feedback.mjs` builds paired validation feedback and bounded public execution traces. Private scorer state, gold answers and Test feedback stay outside optimizer input.

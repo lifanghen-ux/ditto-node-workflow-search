@@ -29,4 +29,5 @@ jobs:
         env:
           DITTO_PROVIDER_PYTHON: python
       - run: npm run audit:prompts
+      - run: npm run test:generated
       - run: python scripts/provider_bridge_test.py

@@ -26,12 +26,18 @@
     "experiment:legacy:small": "npm run build && node --experimental-vm-modules --env-file-if-exists=.env dist/coding/drop-small.js --method b",
     "audit:prompts": "npm run build && node --experimental-vm-modules scripts/audit_unified_prompts.mjs",
     "validate:drop:contract": "npm run build && node --experimental-vm-modules --env-file-if-exists=.env scripts/drop_answer_contract_smoke.mjs",
-    "audit:drop:contract": "npm run build && node --experimental-vm-modules scripts/audit_drop_answer_contract.mjs"
+    "audit:drop:contract": "npm run build && node --experimental-vm-modules scripts/audit_drop_answer_contract.mjs",
+    "experiment:drop": "powershell -NoProfile -File scripts/run-generated-search.ps1 -Representation A",
+    "experiment:drop:a": "powershell -NoProfile -File scripts/run-generated-search.ps1 -Representation A",
+    "experiment:user-prompts": "powershell -NoProfile -File scripts/run-user-prompts.ps1",
+    "experiment:a": "powershell -NoProfile -File scripts/run-a-evolution.ps1",
+    "test:generated": "node --test scripts/a-evolution-policy.test.mjs scripts/audit-generated-run.test.mjs scripts/complete-small-batch-candidate.test.mjs scripts/expand-frozen-validation.test.mjs scripts/generated-artifact-registry.test.mjs scripts/generated-infer-contract.test.mjs scripts/generated-proposal-json.test.mjs scripts/generated-provider-health.test.mjs scripts/generated-run-history.test.mjs scripts/generated-search-feedback.test.mjs scripts/generated-search-recovery.test.mjs scripts/generated-small-batch-policy.test.mjs scripts/generated-workflow-a.test.mjs scripts/generated-workflow-b.test.mjs scripts/prepare-user-prompt-run.test.mjs"
   },
   "dependencies": {
     "@codesoul-co/ditto": "0.1.1",
     "@codesoul-co/ditto-retrieval": "0.1.0",
-    "acorn": "8.15.0"
+    "acorn": "8.15.0",
+    "jsonrepair": "3.15.0"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",

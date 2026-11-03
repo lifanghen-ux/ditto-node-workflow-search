@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createHttpProvider, type SampleInput } from "@codesoul-co/ditto/worker/infer";
 import { Sandbox } from "@codesoul-co/ditto/runtime/sandbox";
-import { applyModelProfile } from "../ditto/runtime.js";
+import { applyModelProfile, admitProviderCalls } from "../ditto/runtime.js";
 import { EXPERIMENT_EXECUTION, EXPERIMENT_GENERATION, EXPERIMENT_PROVIDER_OPTIONS } from "../model-profile.js";
 import { loadProviderSettings, parseArguments } from "../config.js";
 import { createInitialTrajectoryNode } from "../workflow/spec.js";
@@ -61,4 +61,21 @@ test("formal CLI rejects sampling and model or endpoint drift", () => {
   assert.equal(loadProviderSettings({ CODE_SOUL_API_KEY: "offline" }).model, "deepseek-flash");
   assert.throws(() => loadProviderSettings({ CODE_SOUL_API_KEY: "offline", CODE_SOUL_MODEL: "other" }), /fixed experiment/);
   assert.throws(() => loadProviderSettings({ CODE_SOUL_API_KEY: "offline", CODE_SOUL_BASE_URL: "https://example.invalid" }), /fixed experiment/);
+});
+
+test("host context reaches invoke and stream without mutating candidate messages", async () => {
+  const seen: SampleInput[] = [];
+  const output = { message: { role: "assistant" as const, content: "done" }, finishReason: "stop" as const };
+  let admitted = 0;
+  const provider = admitProviderCalls({
+    async invoke(input) { seen.push(input); return output; },
+    async *stream(input) { seen.push(input); yield { type: "result" as const, output }; },
+  }, () => { admitted++; }, input => ({ ...input, messages: [{ role: "system", content: "tool reference" }, ...input.messages] }));
+  const input: SampleInput = { messages: [{ role: "user", content: "public task" }], model: { model: "fixture" } };
+  const options = { signal: new AbortController().signal };
+  await provider.invoke(input, options);
+  for await (const _event of provider.stream!(input, options)) { /* consume */ }
+  assert.equal(admitted, 2);
+  for (const value of seen) assert.deepEqual(value.messages, [{ role: "system", content: "tool reference" }, ...input.messages]);
+  assert.equal(input.messages.length, 1);
 });
