@@ -21,6 +21,40 @@ def literal_call(source):
 CONTRACT = 'bfcl-shared-conversation-v1'
 
 
+def observation_shape(raw, response_schema=None):
+    """Display-only shape of the real return. Raw observations/replay stay exact."""
+    value = raw
+    format_name = 'native'
+    if isinstance(raw, str):
+        format_name = 'raw-text'
+        if len(raw) <= 1_000_000:
+            try:
+                value = json.loads(raw)
+                format_name = 'json'
+            except (ValueError, RecursionError):
+                try:
+                    value = ast.literal_eval(raw)
+                    format_name = 'python-literal'
+                except (ValueError, SyntaxError, RecursionError):
+                    pass
+    def shape(item):
+        if item is None: return {'kind': 'null'}
+        if isinstance(item, bool): return {'kind': 'boolean'}
+        if isinstance(item, (int, float)): return {'kind': 'number'}
+        if isinstance(item, dict): return {'kind': 'object', 'keys': [str(key) for key in list(item)[:40]]}
+        if isinstance(item, (list, tuple)):
+            return {'kind': 'array' if isinstance(item, list) else 'tuple', 'length': len(item),
+                    'itemKinds': list(dict.fromkeys(type(child).__name__ for child in item[:32]))}
+        return {'kind': 'string'}
+    observed = shape(value)
+    declared = (response_schema or {}).get('type')
+    declared = {'dict': 'object', 'list': 'array', 'int': 'number', 'integer': 'number',
+                'float': 'number', 'bool': 'boolean'}.get(declared, declared)
+    return {'source': 'actual-tool-return-shape', 'format': format_name, 'observed': observed,
+            'declaredKind': declared,
+            'schemaShapeMismatch': declared in ('object', 'array', 'number', 'boolean', 'string') and declared != observed['kind']}
+
+
 class Conversation:
     def __init__(self, official, task_id):
         self.official = official
@@ -89,13 +123,19 @@ class Conversation:
             literal_call(source)
             sources.append(source); encoded.append({fn: json.dumps(call['arguments'])})
         observations = self.execute(sources)
+        public_schemas = {function['name']: function.get('response', {}) for function in self.functions}
+        shapes = [dict(callIndex=index, function=call['name'], **observation_shape(obs, public_schemas.get(call['name'])))
+                  for index, (call, obs) in enumerate(zip(calls, observations))]
         self.results[-1].append(encoded)
         self.history.append({'role': 'assistant', 'calls': calls})
-        self.history.extend({'role': 'tool', 'name': call['name'], 'content': obs} for call, obs in zip(calls, observations))
+        self.history.extend({'role': 'tool', 'name': call['name'], 'content': obs,
+                             'metadata': {'observationShape': summary}}
+                            for call, obs, summary in zip(calls, observations, shapes))
         self.steps += 1
         from bfcl_eval.constants.default_prompts import MAXIMUM_STEP_LIMIT
         if self.steps > MAXIMUM_STEP_LIMIT: self.forced = self.complete = True
-        return {'turn': self.turn, 'observations': observations, 'complete': self.complete, 'forced': self.forced}
+        return {'turn': self.turn, 'observations': observations, 'observationShapes': shapes,
+                'complete': self.complete, 'forced': self.forced}
 
     def snapshot(self):
         return {'contract': CONTRACT, 'world': {'id': self.entry['id'], 'result': self.results,

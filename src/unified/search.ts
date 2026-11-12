@@ -7,11 +7,13 @@ import {checkAFlowConvergence} from '../search/convergence.js';
 import {captureProviderDiagnostics,summarizeProviderDiagnostics} from '../ditto/provider-diagnostics.js';
 import {BASELINE_DEFINITION,validateDefinition,validateDefinitionChange,digest,NODE_TYPES,DefinitionError,type DefinitionIssue,type GraphDefinition} from '../graph-agent/schema.js';
 import {GRAPH_DEFINITION_GUIDE} from '../graph-agent/search.js';
-import {buildUnifiedFeedback,type FeedbackEvaluation} from './feedback.js';
+import {buildUnifiedFeedback,PUBLIC_FEEDBACK_VERSION,type FeedbackEvaluation} from './feedback.js';
 import {UNIFIED_DEFAULTS,UNIFIED_SEARCH_POLICY,comparableTokens} from './policy.js';
 import {UNIFIED_OPTIMIZER_SYSTEM,UNIFIED_OPTIMIZER_SYSTEM_SHA256,UNIFIED_PROMPT_VERSION} from './prompts.js';
 import {publicAnswerContract,taskOutputRequirements} from '../benchmark/answer-contract.js';
 import {EVIDENCE_PRESENTATION_VERSION} from '../graph-agent/evidence.js';
+import {publicEvaluationContract} from '../benchmark/evaluation-contract.js';
+import {searchObjective,SEARCH_OBJECTIVE_VERSION} from './search-objective.js';
 import {MULTI_WORKER_POLICY,EXPLORATION_DIRECTIONS,directionForRound,explorationInstruction,validateExploration,executedDirectionNodes,type ExplorationDirection} from './exploration.js';
 
 export interface UnifiedEvaluation extends FeedbackEvaluation {}
@@ -162,8 +164,8 @@ export async function searchUnifiedWorkflows(options:UnifiedSearchOptions):Promi
   const explore=options.exploration!==false;
   if(explore&&baseline.graphs.flatMap(g=>g.nodes).filter(n=>n.type==='INFER.REASONING.SAMPLE').length>1)throw Error('Protected multi-worker search requires a baseline with at most one SAMPLE');
   if((baseline as {version:number}).version!==2)throw Error('Unified baseline must use version:2');
-  const configurationHash=digest({policy:UNIFIED_SEARCH_POLICY,system:UNIFIED_OPTIMIZER_SYSTEM_SHA256,identity:options.identity??null,dataset:options.dataset,
-    model:options.model,generation:GENERATION,answerContract:publicAnswerContract(options.dataset),evidencePresentation:EVIDENCE_PRESENTATION_VERSION,exploration:explore?MULTI_WORKER_POLICY:false,taskIds:options.publicTasks.map(task=>task.id),repeats,maxValid,maxDesign,maxAttempts,patience,seed,baseline:unifiedArtifactHash(baseline)});
+  const configurationHash=digest({policy:UNIFIED_SEARCH_POLICY,searchObjective:SEARCH_OBJECTIVE_VERSION,system:UNIFIED_OPTIMIZER_SYSTEM_SHA256,publicFeedback:PUBLIC_FEEDBACK_VERSION,identity:options.identity??null,dataset:options.dataset,
+    model:options.model,generation:GENERATION,answerContract:publicAnswerContract(options.dataset),evaluationContract:publicEvaluationContract(options.dataset),evidencePresentation:EVIDENCE_PRESENTATION_VERSION,exploration:explore?MULTI_WORKER_POLICY:false,taskIds:options.publicTasks.map(task=>task.id),repeats,maxValid,maxDesign,maxAttempts,patience,seed,baseline:unifiedArtifactHash(baseline)});
   const random=new SeededRandom(seed);
   let state:UnifiedSearchState=options.resume?structuredClone(options.resume):{schemaVersion:1,policy:UNIFIED_SEARCH_POLICY,configurationHash,
     systemPromptSha256:UNIFIED_OPTIMIZER_SYSTEM_SHA256,validEvaluations:0,designRoundsCompleted:0,proposalAttempts:0,prunedEvaluations:0,engineeringFailures:0,
@@ -250,9 +252,10 @@ export async function searchUnifiedWorkflows(options:UnifiedSearchOptions):Promi
     const id=nextId(),proposalAttempt=selection.proposalAttempts+1;
     state={...state,nextAttemptIndex:state.nextAttemptIndex+1,proposalAttempts:state.proposalAttempts+1,selection:{...selection,proposalAttempts:proposalAttempt}};
     const request=JSON.stringify({mode:selection.contractRepair?'ENGINEERING REPAIR':'QUALITY SEARCH',dataset:options.dataset,
+      searchObjective:searchObjective(state.history),
       parent:{id:parent.id,definition:parent.definition,score:parent.evaluation.score,totalTokens:parent.evaluation.totalTokens},
       immutableProtocol:{policy:UNIFIED_SEARCH_POLICY,repeats,fullExamples:options.publicTasks.length,systemVersion:UNIFIED_PROMPT_VERSION,
-        systemPromptSha256:UNIFIED_OPTIMIZER_SYSTEM_SHA256,publicAnswerContract:publicAnswerContract(options.dataset),capabilities:NODE_TYPES,remainingValidBudget:maxValid-state.validEvaluations,
+        systemPromptSha256:UNIFIED_OPTIMIZER_SYSTEM_SHA256,publicAnswerContract:publicAnswerContract(options.dataset),evaluationContract:publicEvaluationContract(options.dataset),capabilities:NODE_TYPES,remainingValidBudget:maxValid-state.validEvaluations,
         mutationLimits:{mainChange:1,auxiliary:'necessary connected predecessors/successors only',maxDeclaredNodes:24,maxExistingContentChanges:5,maxToolChanges:1,
           dependencyEdgeEdits:'max(12,4*N), N=max(parent,child nodes); reversal costs two'}},
       interfaceGuide:GRAPH_DEFINITION_GUIDE,
@@ -261,7 +264,7 @@ export async function searchUnifiedWorkflows(options:UnifiedSearchOptions):Promi
       publicTaskExamples:options.publicTasks.slice(0,2).map(task=>({id:task.id,prompt:task.prompt,outputInstruction:taskOutputRequirements(task)})),
       history:state.history.map(row=>({id:row.id,parentId:row.parentId,status:row.status,explorationDirection:row.explorationDirection,...(row.rationale?{rationale:row.rationale.slice(0,1000)}:{}),
         ...(isUnifiedCandidate(row)?{score:row.evaluation.score,totalTokens:row.evaluation.totalTokens}:{}),...(row.status==='quality-pruned'?{stage:row.evaluation?.examples,stageScore:row.evaluation?.score}:{}),})),
-      measuredFeedback:buildUnifiedFeedback(state.history,options.publicTasks),
+      measuredFeedback:buildUnifiedFeedback(state.history,options.publicTasks,{failureOffset:(selection.designRound-1)*4}),
       ...(selection.contractRepair?{contractRepair:selection.contractRepair}:{}),});
     await save();await event({type:'unified-proposal-request',id,designRound:selection.designRound,proposalAttempt,systemPrompt:UNIFIED_OPTIMIZER_SYSTEM,request});
     let rawResponse:string|undefined,definition:GraphDefinition|undefined,rationale:string|undefined;

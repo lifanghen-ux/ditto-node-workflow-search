@@ -47,6 +47,7 @@ export function validateNativeLiteral(value:any,schema:Shape,path:string):void {
 function helperOutput(node:AgentNode):Shape|undefined {
  if(node.type!=='HOST.DATA.TRANSFORM')return undefined;
  const operation=(node.input as any)?.operation;
+ if(operation==='text'&&((node.input as any)?.preserveNull===true||dynamic((node.input as any)?.preserveNull)))return{anyOf:[{type:'string'},{type:'null'}]};
  if(['json','text','concat','evidence'].includes(operation))return{type:'string'};
  if(operation==='memory-ids')return{type:'array',items:{type:'string'}};
  if(operation==='decision')return{type:'object',properties:{done:{type:'boolean'},tool:{type:'string'},arguments:{type:'object'},finalAnswer:{type:'string'}},additionalProperties:false};

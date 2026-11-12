@@ -13,13 +13,16 @@ import {DefinitionError,digest,type DefinitionIssue,type ToolDefinition} from '.
 import {validateOfficialExploration as validateExploration,executedOfficialDirectionNodes as executedDirectionNodes} from './schema.js';
 import {OFFICIAL_BASELINE as BASELINE_DEFINITION,validateOfficialDefinition as validateDefinition,validateOfficialChange,OFFICIAL_MUTATION_LIMITS,officialArtifactHash,officialNodes,OFFICIAL_CAPABILITIES as NODE_TYPES,type MutationExplanation,type OfficialAgentDefinition as GraphDefinition} from './schema.js';
 import {OFFICIAL_DEFINITION_GUIDE as GRAPH_DEFINITION_GUIDE} from './prompts.js';
-import {buildUnifiedFeedback as buildOfficialFeedback,type FeedbackEvaluation} from '../unified/feedback.js';
+import {buildUnifiedFeedback as buildOfficialFeedback,PUBLIC_FEEDBACK_VERSION,type FeedbackEvaluation} from '../unified/feedback.js';
 import {UNIFIED_DEFAULTS,UNIFIED_SEARCH_POLICY,comparableTokens} from '../unified/policy.js';
 import {OFFICIAL_OPTIMIZER_SYSTEM as UNIFIED_OPTIMIZER_SYSTEM,OFFICIAL_OPTIMIZER_SYSTEM_SHA256 as UNIFIED_OPTIMIZER_SYSTEM_SHA256,OFFICIAL_PROMPT_VERSION as UNIFIED_PROMPT_VERSION} from './prompts.js';
 import {publicAnswerContract,taskOutputRequirements} from '../benchmark/answer-contract.js';
 import {EVIDENCE_PRESENTATION_VERSION} from '../graph-agent/evidence.js';
 import {validateProposalEnvelope,OFFICIAL_PROPOSAL_SCHEMA,OFFICIAL_PROPOSAL_CONTRACT_VERSION} from './proposal-contract.js';
 import {NATIVE_CONTRACTS,NATIVE_CONTRACTS_VERSION,HOST_TOOL_CONTRACTS,HOST_INFER_MESSAGES_SCHEMA} from './native-contracts.js';
+import {publicEvaluationContract} from '../benchmark/evaluation-contract.js';
+import {searchObjective,SEARCH_OBJECTIVE_VERSION} from '../unified/search-objective.js';
+import {assertReusableStrategy,TASK_GENERALITY_VERSION} from './task-generality.js';
 import {STANDARD_TOOL_CONTRACTS} from './tool-contracts.js';
 import {MULTI_WORKER_POLICY,EXPLORATION_DIRECTIONS,directionForRound,explorationInstruction,type ExplorationDirection} from '../unified/exploration.js';
 
@@ -70,6 +73,9 @@ export interface OfficialSearchOptions {
   readonly maxValidEvaluations?:number; readonly maxDesignRounds?:number; readonly maxProposalAttempts?:number;
   readonly deadlineAt?:number; readonly seed?:number; readonly patience?:number; readonly identity?:string;
   readonly initialDefinition?:GraphDefinition;readonly initialization?:unknown;
+  /** Complete measured Search candidates whose execution identity is checked by the caller. */
+  readonly measuredSeeds?:readonly OfficialCandidate[];
+  readonly targetScore?:number;
   /** Explicit opt-out is for isolated protocol tests/legacy diagnostic comparisons. Main search enables protected directions. */
   readonly exploration?:false;
   readonly evaluate:(definition:GraphDefinition,id:string,reference?:OfficialCandidate,context?:{direction?:ExplorationDirection;toolArtifacts?:readonly ToolDefinition[]|undefined})=>Promise<OfficialEvaluation>;
@@ -153,32 +159,44 @@ export function parseOfficialProposal(content:string):{rationale:string;definiti
 
 /** One measured parent per design round. Engineering repairs stay in that round and retain all attempts. */
 export async function searchOfficialWorkflows(options:OfficialSearchOptions):Promise<{
-  state:OfficialSearchState;best:OfficialCandidate;stoppedBecause:'valid-budget'|'design-budget'|'converged'|'walltime-budget';
+  state:OfficialSearchState;best:OfficialCandidate;stoppedBecause:'valid-budget'|'design-budget'|'converged'|'walltime-budget'|'score-target';
 }>{
   const maxValid=options.maxValidEvaluations??UNIFIED_DEFAULTS.maxValidEvaluations,maxDesign=options.maxDesignRounds??UNIFIED_DEFAULTS.maxDesignRounds;
   const maxAttempts=options.maxProposalAttempts??UNIFIED_DEFAULTS.maxProposalAttempts,repeats=options.expectedRepeats??UNIFIED_DEFAULTS.validationRepeats;
   const patience=options.patience??UNIFIED_DEFAULTS.patience,seed=options.seed??UNIFIED_DEFAULTS.seed;
   for(const [name,value]of Object.entries({maxValid,maxDesign,maxAttempts,repeats,patience}))integer(value,name);
   integer(seed,'seed',0,0xffffffff);
+  if(options.targetScore!==undefined&&(!Number.isFinite(options.targetScore)||options.targetScore<0||options.targetScore>1))throw Error('Invalid target score');
+  const seeds=options.measuredSeeds??[];
+  if(seeds.length>maxValid)throw Error('Measured seeds exceed the valid evaluation budget');
+  for(const [index,candidate]of seeds.entries()){
+   if(candidate.id!==`official-${String(index+1).padStart(4,'0')}`||candidate.parentId!==null||!isOfficialCandidate(candidate))throw Error('Measured seeds must be complete unique numbered roots');
+   validateDefinition(candidate.definition,candidate.toolArtifacts);
+   assertReusableStrategy(candidate.definition,options.publicTasks);
+   if(officialArtifactHash(candidate.definition,candidate.toolArtifacts)!==candidate.artifactHash)throw Error('Measured seed artifact differs');
+   assertOfficialComplete(candidate.evaluation,options.publicTasks,repeats);
+  }
   if(!options.publicTasks.length||new Set(options.publicTasks.map(task=>task.id)).size!==options.publicTasks.length
     ||options.publicTasks.some(task=>task.dataset!==options.dataset)||options.expectedExamples!==undefined&&options.expectedExamples!==options.publicTasks.length)
     throw Error('Official search requires the complete unique public task collection for its declared evaluation');
   const baseline=validateDefinition(options.initialDefinition??{...structuredClone(BASELINE_DEFINITION),version:1});
+  assertReusableStrategy(baseline,options.publicTasks);
   const explore=options.exploration!==false;
   if(explore&&officialNodes(baseline).filter(n=>n.node.type==='INFER.REASONING.SAMPLE').length>1)throw Error('Protected multi-worker search requires a baseline with at most one SAMPLE');
   if((baseline as {version:number}).version!==1)throw Error('Official baseline must use version:1');
-  const configurationHash=digest({policy:UNIFIED_SEARCH_POLICY,mutationPolicy:OFFICIAL_MUTATION_LIMITS,deadlineAt:options.deadlineAt??null,directionResources:'shared-global-no-direction-caps-v1',system:UNIFIED_OPTIMIZER_SYSTEM_SHA256,contracts:{proposal:OFFICIAL_PROPOSAL_CONTRACT_VERSION,native:NATIVE_CONTRACTS_VERSION,guide:digest(GRAPH_DEFINITION_GUIDE)},identity:options.identity??null,dataset:options.dataset,
-    model:options.model,generation:GENERATION,optimizerGeneration:OFFICIAL_OPTIMIZER_GENERATION,optimizerRequestMs:OFFICIAL_OPTIMIZER_REQUEST_MS,answerContract:publicAnswerContract(options.dataset),evidencePresentation:EVIDENCE_PRESENTATION_VERSION,exploration:explore?MULTI_WORKER_POLICY:false,taskIds:options.publicTasks.map(task=>task.id),repeats,maxValid,maxDesign,maxAttempts,patience,seed,baseline:officialArtifactHash(baseline),initialization:options.initialization??null});
+  const configurationHash=digest({policy:UNIFIED_SEARCH_POLICY,mutationPolicy:OFFICIAL_MUTATION_LIMITS,deadlineAt:options.deadlineAt??null,directionResources:'shared-global-no-direction-caps-v1',searchObjective:SEARCH_OBJECTIVE_VERSION,taskGenerality:TASK_GENERALITY_VERSION,system:UNIFIED_OPTIMIZER_SYSTEM_SHA256,publicFeedback:PUBLIC_FEEDBACK_VERSION,contracts:{proposal:OFFICIAL_PROPOSAL_CONTRACT_VERSION,native:NATIVE_CONTRACTS_VERSION,guide:digest(GRAPH_DEFINITION_GUIDE)},identity:options.identity??null,dataset:options.dataset,
+    model:options.model,generation:GENERATION,optimizerGeneration:OFFICIAL_OPTIMIZER_GENERATION,optimizerRequestMs:OFFICIAL_OPTIMIZER_REQUEST_MS,answerContract:publicAnswerContract(options.dataset),evaluationContract:publicEvaluationContract(options.dataset),evidencePresentation:EVIDENCE_PRESENTATION_VERSION,exploration:explore?MULTI_WORKER_POLICY:false,taskIds:options.publicTasks.map(task=>task.id),repeats,maxValid,maxDesign,maxAttempts,patience,seed,targetScore:options.targetScore??null,measuredSeeds:seeds.map(candidate=>({id:candidate.id,artifactHash:candidate.artifactHash,evaluation:digest(candidate.evaluation)})),baseline:officialArtifactHash(baseline),initialization:options.initialization??null});
   const random=new SeededRandom(seed);
   let state:OfficialSearchState=options.resume?structuredClone(options.resume):{schemaVersion:1,policy:UNIFIED_SEARCH_POLICY,configurationHash,
-    systemPromptSha256:UNIFIED_OPTIMIZER_SYSTEM_SHA256,validEvaluations:0,designRoundsCompleted:0,proposalAttempts:0,prunedEvaluations:0,engineeringFailures:0,
-    nextAttemptIndex:1,randomState:random.state,optimizerUsage:emptyUsage(),history:[]};
+    systemPromptSha256:UNIFIED_OPTIMIZER_SYSTEM_SHA256,validEvaluations:seeds.length,designRoundsCompleted:0,proposalAttempts:0,prunedEvaluations:0,engineeringFailures:0,
+    nextAttemptIndex:seeds.length+1,randomState:random.state,optimizerUsage:emptyUsage(),history:structuredClone(seeds)};
   if(state.schemaVersion!==1||state.policy!==UNIFIED_SEARCH_POLICY||state.configurationHash!==configurationHash||state.systemPromptSha256!==UNIFIED_OPTIMIZER_SYSTEM_SHA256)
     throw Error('Search resume model/data/runtime/prompt/configuration identity differs');
   random.restore(state.randomState);
   if(state.validEvaluations!==state.history.filter(isOfficialCandidate).length||state.prunedEvaluations!==state.history.filter(row=>row.status==='quality-pruned').length
     ||new Set(state.history.map(row=>row.id)).size!==state.history.length)throw Error('Search checkpoint counters/history disagree');
   for(const candidate of state.history.filter(isOfficialCandidate)){
+    assertReusableStrategy(candidate.definition,options.publicTasks);
     validateDefinition(candidate.definition,candidate.toolArtifacts);if(officialArtifactHash(candidate.definition,candidate.toolArtifacts)!==candidate.artifactHash)throw Error('Saved candidate artifact identity changed');
     assertOfficialComplete(candidate.evaluation,options.publicTasks,repeats);
   }
@@ -189,11 +207,12 @@ export async function searchOfficialWorkflows(options:OfficialSearchOptions):Pro
     state={...state,pending:{id:nextId(),designRound:0,proposalAttempt:0,parentId:null,definition:baseline,artifactHash:officialArtifactHash(baseline),rationale:'Frozen dataset-independent baseline; its complete evaluation counts toward the valid budget.'},nextAttemptIndex:state.nextAttemptIndex+1};
     await save();
   }
-  let stoppedBecause:'valid-budget'|'design-budget'|'converged'|'walltime-budget'='valid-budget';
+  let stoppedBecause:'valid-budget'|'design-budget'|'converged'|'walltime-budget'|'score-target'='valid-budget';
   while(true){
     if(state.pending){
       const pending=state.pending;
       validateDefinition(pending.definition,pending.toolArtifacts);
+      assertReusableStrategy(pending.definition,options.publicTasks);
       if(officialArtifactHash(pending.definition,pending.toolArtifacts)!==pending.artifactHash)throw Error('Pending artifact identity mismatch');
       if(pending.parentId!==null){const parent=state.history.find(row=>row.id===pending.parentId);if(!parent||!isOfficialCandidate(parent))throw Error('Pending parent is not a complete valid candidate');validateOfficialChange(parent.definition,pending.definition,pending.mutation,parent.toolArtifacts,pending.toolArtifacts);}
       let evaluation:OfficialEvaluation|undefined;
@@ -235,6 +254,7 @@ export async function searchOfficialWorkflows(options:OfficialSearchOptions):Pro
         continue;
       }
     }
+    if(options.targetScore!==undefined&&(bestOfficialCandidate(state.history)?.evaluation.score??-1)>=options.targetScore){stoppedBecause='score-target';break;}
     if(state.validEvaluations>=maxValid){stoppedBecause='valid-budget';break;}
     const complete=state.history.filter(isOfficialCandidate);
     if(!state.selection&&(!explore||state.designRoundsCompleted>=EXPLORATION_DIRECTIONS.length)&&checkAFlowConvergence(complete.map(row=>row.evaluation),3,0,patience).converged){stoppedBecause='converged';break;}
@@ -256,9 +276,11 @@ export async function searchOfficialWorkflows(options:OfficialSearchOptions):Pro
     const id=nextId(),proposalAttempt=selection.proposalAttempts+1;
     state={...state,nextAttemptIndex:state.nextAttemptIndex+1,proposalAttempts:state.proposalAttempts+1,selection:{...selection,proposalAttempts:proposalAttempt}};
     const request=JSON.stringify({initialization:options.initialization,mode:selection.contractRepair?'ENGINEERING REPAIR':'QUALITY SEARCH',dataset:options.dataset,
+      searchObjective:searchObjective(state.history,options.targetScore),
+      reusableStrategyPolicy:{version:TASK_GENERALITY_VERSION,rule:'Reusable config must not contain measured task-specific function identifiers or per-function solution rules. Obtain the actual signature from the current public task at execution time. Ordinary generic vocabulary and official tool names remain available.'},
       parent:{id:parent.id,definition:parent.definition,toolArtifacts:parent.toolArtifacts??[],score:parent.evaluation.score,totalTokens:parent.evaluation.totalTokens},
       immutableProtocol:{policy:UNIFIED_SEARCH_POLICY,repeats,fullExamples:options.publicTasks.length,systemVersion:UNIFIED_PROMPT_VERSION,
-        systemPromptSha256:UNIFIED_OPTIMIZER_SYSTEM_SHA256,publicAnswerContract:publicAnswerContract(options.dataset),capabilities:NODE_TYPES,remainingValidBudget:maxValid-state.validEvaluations,
+        systemPromptSha256:UNIFIED_OPTIMIZER_SYSTEM_SHA256,publicAnswerContract:publicAnswerContract(options.dataset),evaluationContract:publicEvaluationContract(options.dataset),capabilities:NODE_TYPES,remainingValidBudget:maxValid-state.validEvaluations,
         mutationLimits:OFFICIAL_MUTATION_LIMITS},
       interfaceGuide:GRAPH_DEFINITION_GUIDE,
       proposalContract:{version:OFFICIAL_PROPOSAL_CONTRACT_VERSION,schema:OFFICIAL_PROPOSAL_SCHEMA},
@@ -275,7 +297,7 @@ export async function searchOfficialWorkflows(options:OfficialSearchOptions):Pro
       publicTaskExamples:options.publicTasks.slice(0,2).map(task=>({id:task.id,prompt:task.prompt,outputInstruction:taskOutputRequirements(task)})),
       history:state.history.map(row=>({id:row.id,parentId:row.parentId,status:row.status,explorationDirection:row.explorationDirection,...(row.rationale?{rationale:row.rationale.slice(0,1000)}:{}),
         ...(isOfficialCandidate(row)?{score:row.evaluation.score,totalTokens:row.evaluation.totalTokens}:{}),...(row.status==='quality-pruned'?{stage:row.evaluation?.examples,stageScore:row.evaluation?.score}:{}),})),
-      measuredFeedback:buildOfficialFeedback(state.history,options.publicTasks),
+      measuredFeedback:buildOfficialFeedback(state.history,options.publicTasks,{failureOffset:(selection.designRound-1)*4}),
       ...(selection.contractRepair?{contractRepair:selection.contractRepair}:{}),});
     await save();await event({type:'unified-proposal-request',id,designRound:selection.designRound,proposalAttempt,systemPrompt:UNIFIED_OPTIMIZER_SYSTEM,request});
     let rawResponse:string|undefined,definition:GraphDefinition|undefined,rationale:string|undefined,toolArtifacts:readonly ToolDefinition[]|undefined,mutation:MutationExplanation|undefined;
@@ -298,6 +320,7 @@ export async function searchOfficialWorkflows(options:OfficialSearchOptions):Pro
       }
       rawResponse=typeof sampled.output.message.content==='string'?sampled.output.message.content:JSON.stringify(sampled.output.message.content);
       const parsed=parseOfficialProposal(rawResponse);definition=parsed.definition;rationale=parsed.rationale;toolArtifacts=parsed.toolArtifacts;mutation=parsed.mutation;
+      assertReusableStrategy(definition,options.publicTasks);
       validateOfficialChange(parent.definition,definition,mutation,parent.toolArtifacts,toolArtifacts);
       if(selection.explorationDirection)validateExploration(parent.definition,definition,selection.explorationDirection);
       const artifactHash=officialArtifactHash(definition,toolArtifacts);

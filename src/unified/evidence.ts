@@ -1,5 +1,5 @@
 import type {CaseResult} from '../domain.js';
-import {traceValue,type FeedbackEvaluation} from './feedback.js';
+import {traceValue,selectPublicTraceEvents,publicBfclTurnEvidence,publicBfclFunctionCatalogue,type FeedbackEvaluation} from './feedback.js';
 
 const object=(value:unknown):value is Record<string,unknown>=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 const PREDICTION_LIMIT=4000;
@@ -28,16 +28,18 @@ export class EvaluationTraceView {
   this.#runs.set(value.taskId,runs);
   if(!runs.has(key)&&runs.size>=this.#repeats)return;
   const events=Array.isArray(value.events)?value.events:[];
-  const selected=events.length<=6?events:[...events.slice(0,3),...events.slice(-3)];
-  const base={taskId:value.taskId,...(typeof value.caseId==='string'?{caseId:value.caseId}:{}),truncated:true,traceSelection:'first-three-and-last-three-events'};
+  const selected=selectPublicTraceEvents(events),causal=selected.some(event=>object(event)&&typeof event.nodeType==='string');
+  const bfclTurns=publicBfclTurnEvidence(events,Math.floor(this.#limit*.6));
+  const base={taskId:value.taskId,...(typeof value.caseId==='string'?{caseId:value.caseId}:{}),truncated:true,traceSelection:'action-and-outcome-window-v1'};
   let view:Record<string,unknown>={...base,events:[]};
   for(const limit of [1200,600,240,80,16]){
-   const next={...base,events:selected.map(event=>traceValue(event,limit)),
-    ...(object(value.nodeInputs)?{nodeInputs:traceValue(value.nodeInputs,limit*2)}:{}),
-    ...(object(value.rawNodeOutputs)?{rawNodeOutputs:traceValue(value.rawNodeOutputs,limit*2)}:{})};
+   const next={...base,...(bfclTurns?{bfclTurns}:{}),events:selected.map(event=>traceValue(event,limit)),
+    ...(!causal&&object(value.nodeInputs)?{nodeInputs:traceValue(value.nodeInputs,limit*2)}:{}),
+    ...(!causal&&object(value.rawNodeOutputs)?{rawNodeOutputs:traceValue(value.rawNodeOutputs,limit*2)}:{})};
    if(JSON.stringify(next).length<=this.#limit){view=next;break;}
   }
-  runs.set(key,view);
+  const bfclFunctions=publicBfclFunctionCatalogue(events);
+  runs.set(key,{...view,...(bfclFunctions?{bfclFunctions}:{})});
  }
  views(results:readonly CaseResult[]):readonly unknown[]{
   const scores=new Map(results.filter(row=>row.valid===true&&!row.error).map(row=>[row.caseId,row.score]));

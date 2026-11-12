@@ -30,6 +30,17 @@ test('BFCL scoring recovery is bound to the original task, repeat, answer and of
  assert.throws(()=>validateBfclSnapshot({contract:'other',world:snapshot.world},'multi_turn_base_1'),/checkpoint/);
 });
 
+test('BFCL public observation shapes distinguish lists, objects and void without evaluating returned code',()=>{
+ const python=process.env.DITTO_PROVIDER_PYTHON??'python';
+ const bridge=fileURLToPath(new URL('../../scripts/official_bfcl_bridge.py',import.meta.url));
+ const source=`import importlib.util,json,sys\nspec=importlib.util.spec_from_file_location('bridge',sys.argv[1]);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)\nvalues=["[{'id': 1, 'status': 'Open'}]",'{"id":1}', 'None', '__import__("module_that_must_not_run").exit()']\nprint(json.dumps([module.observation_shape(value,{'type':'dict'}) for value in values]))`;
+ const rows=JSON.parse(execFileSync(python,['-I','-B','-c',source,bridge],{encoding:'utf8',windowsHide:true}));
+ assert.equal(rows[0].format,'python-literal');assert.equal(rows[0].observed.kind,'array');assert.equal(rows[0].observed.length,1);assert.equal(rows[0].schemaShapeMismatch,true);
+ assert.equal(rows[1].observed.kind,'object');assert.equal(rows[1].schemaShapeMismatch,false);
+ assert.equal(rows[2].observed.kind,'null');assert.equal(rows[3].format,'raw-text');
+ assert(!JSON.stringify(rows).includes('ground_truth'));
+});
+
 test('BFCL publication verification rejects a correct-size fabricated dataset before any environment starts',async()=>{
  const bytes=Buffer.from(Array.from({length:200},(_,id)=>JSON.stringify({id:`bfcl:fake_${id}`,prompt:'synthetic fixture'})).join('\n'));
  await assert.rejects(verifyBfclRecords(bytes,'validate'),/publication verification failed/);

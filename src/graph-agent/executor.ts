@@ -35,7 +35,7 @@ export class AgentContractError extends Error {
 export interface ModelResponseRecord {nodeId:string;nodeType:string;rawContent:SampleOutput['message']['content'];finishReason:string;systemMessages:unknown[]}
 export interface GraphAgentResult extends AgentRunResult {
  readonly nodeInputs:Record<string,any>;readonly nodeOutputs:Record<string,any>;readonly rawNodeOutputs:Record<string,any>;
- readonly trace:readonly {graphId:string;nodeId:string;output:unknown}[];
+ readonly trace:readonly {graphId:string;nodeId:string;nodeType?:string;input?:{call:unknown};output:unknown}[];
  readonly reflectionResponses:readonly AgentReflectionResponse[];readonly modelResponses:readonly ModelResponseRecord[];
  readonly convertedNodeOutputs:Record<string,any>;readonly finalPrediction:string;readonly state:Record<string,any>;
  readonly modelFailure?:{kind:'model-output';code:string;message:string;nodeId?:string};

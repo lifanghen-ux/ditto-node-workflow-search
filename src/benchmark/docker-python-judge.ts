@@ -310,7 +310,11 @@ function runSupportBlockParser(python: string, script: string, input: string): s
 
 function stripPlainLanguagePrefix(output: string): string {
   const lines = output.replace(/^\s*\r?\n/, "").trimEnd().split(/\r?\n/);
-  const firstCodeLine = lines.findIndex((line) => /^\s*(?:@|from\s+\S+\s+import\s+|import\s+|(?:async\s+)?def\s+|class\s+)/.test(line));
+  const firstCodeLine = lines.findIndex((line) => /^\s*(?:@|from\s+\S+\s+import\s+|import\s+|(?:async\s+)?def\s+|class\s+|[A-Za-z_]\w*(?:\s*:[^=]+)?\s*=(?!=))/.test(line));
+  // A module docstring or less common assignment syntax may precede the first
+  // recognizable declaration. Preserve a complete declaration module by AST,
+  // without executing imports, decorators or constant initializers.
+  if (firstCodeLine > 0 && supportingPythonBlocks([lines.join("\n")])[0]?.support) return lines.join("\n");
   return (firstCodeLine < 0 ? lines : lines.slice(firstCodeLine)).join("\n").trimEnd();
 }
 

@@ -68,6 +68,14 @@ test("support-block parsing preserves constants, multiline imports and decorated
   assert.equal(extractPythonCandidate(`\`\`\`python\n${invalid}\n\`\`\`\n\`\`\`python\n${entry}\n\`\`\``, "def answer(x):", "answer"), invalid);
 });
 
+test("unfenced Python declarations before the entry point survive prose-prefix extraction", () => {
+  const source = "FACTOR = 2\nUNUSED = __import__('module_that_must_not_be_executed')\n\ndef answer(x):\n    return x * FACTOR";
+  assert.equal(extractPythonCandidate(source, "Return double the argument.\n\ndef answer(x):", "answer", "mbpp"), source);
+  const documented = '"""Public implementation."""\n' + source;
+  assert.equal(extractPythonCandidate(documented, "def answer(x):", "answer", "mbpp"), documented);
+  assert.equal(extractPythonCandidate("Here is the implementation:\n" + source, "def answer(x):", "answer", "mbpp"), source);
+});
+
 test("an explanatory signature-only fence cannot replace the implementation", () => {
   const entry = "def answer(x):\n    return x";
   for (const signature of ["def answer(x):", "def answer(\n    x: int,\n) -> int:", "import math\n\ndef answer(x):\n    # implementation follows"]) {

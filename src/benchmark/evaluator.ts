@@ -95,8 +95,10 @@ async function evaluateOne(
   const history = prior ? { previousResults: Object.freeze([prior]) } : {};
   let run: AgentRunResult;
   try {
-    if (prior?.failureKind === "judge" && scorer.recoveryData) {
-      if (prior.judgeRecovery === undefined) throw new Error("Judge-only recovery requires the saved world; regeneration is refused");
+    if (prior?.failureKind === "judge" && (scorer.recoveryData || scorer.predictionOnlyRecovery)) {
+      // Stateful worlds still require their bound checkpoint. Stateless code
+      // scoring needs only the exact saved answer, never a fresh generation.
+      if (scorer.recoveryData && prior.judgeRecovery === undefined) throw new Error("Judge-only recovery requires the saved world; regeneration is refused");
       run = { answer: prior.prediction, executedNodeIds: [], executedGraphIds: [], inputTokens: 0, outputTokens: 0, totalTokens: 0, usageKnown: true };
     } else {
       run = await withWorkflowTimeBudget(timeBudget, () => retryWorkflow(() => runner(task), cumulativeRetries ? Math.max(0, retryAttempts - attempts.length) : retryAttempts, attempts));

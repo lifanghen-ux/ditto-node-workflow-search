@@ -86,6 +86,9 @@ export interface BenchmarkAdapter {
 
 export interface PrivateScorer {
   score(taskId: string, prediction: string, prior?: CaseResult): Promise<ScoreEvidence>;
+  /** Stateless scoring can reuse the saved answer after a judge fault. The
+   * caller must still verify the execution identity before supplying priorCases. */
+  readonly predictionOnlyRecovery?: true;
   recoveryData?(taskId: string): unknown;
   expectedLabel(taskId: string): string;
 }
@@ -106,5 +109,7 @@ export interface CodeJudgeResult {
 }
 
 export interface CodeJudge {
+  /** Check the configured isolated judge before dispatching any model work. */
+  preflight?(): Promise<void>;
   judge(request: CodeJudgeRequest, signal?: AbortSignal): Promise<CodeJudgeResult>;
 }
