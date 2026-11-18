@@ -32,6 +32,9 @@ parentPort?.on("message", (request: Request) => {
 
 class ToolLimitFault extends Error {}
 class ToolInputFault extends Error {}
+type Fraction = { n: bigint; d: bigint };
+const MAX_ARITHMETIC_BITS = 16_384;
+const MAX_ARITHMETIC_MAGNITUDE = 10n ** 100n;
 
 function evaluateArithmetic(input: unknown): number {
   if (typeof input !== "string" || input.length === 0) throw new ToolInputFault("expression must be a non-empty string");
@@ -60,62 +63,65 @@ class ArithmeticParser {
     if (this.tokens.length === 0) throw new ToolInputFault("expression is empty");
     const value = this.additive(0);
     if (this.tokenIndex !== this.tokens.length) throw new ToolInputFault("expression has trailing or invalid syntax");
-    return this.check(value);
+    return this.toNumber(value);
   }
 
-  private additive(depth: number): number {
+  private additive(depth: number): Fraction {
     this.guardDepth(depth);
     let value = this.multiplicative(depth + 1);
     while (this.peek() === "+" || this.peek() === "-") {
       const operator = this.take();
       const right = this.multiplicative(depth + 1);
       this.countNode();
-      value = this.check(operator === "+" ? value + right : value - right);
+      value = this.check(value.n * right.d + (operator === "+" ? right.n : -right.n) * value.d, value.d * right.d);
     }
     return value;
   }
 
-  private multiplicative(depth: number): number {
+  private multiplicative(depth: number): Fraction {
     this.guardDepth(depth);
     let value = this.unary(depth + 1);
     while (this.peek() === "*" || this.peek() === "/") {
       const operator = this.take();
       const right = this.unary(depth + 1);
-      if (operator === "/" && right === 0) throw new ToolInputFault("division by zero is not allowed");
+      if (operator === "/" && right.n === 0n) throw new ToolInputFault("division by zero is not allowed");
       this.countNode();
-      value = this.check(operator === "*" ? value * right : value / right);
+      value = operator === "*" ? this.check(value.n * right.n, value.d * right.d) : this.check(value.n * right.d, value.d * right.n);
     }
     return value;
   }
 
-  private unary(depth: number): number {
+  private unary(depth: number): Fraction {
     this.guardDepth(depth);
     if (this.peek() === "+" || this.peek() === "-") {
       const operator = this.take();
       const value = this.unary(depth + 1);
       this.countNode();
-      return this.check(operator === "-" ? -value : value);
+      return operator === "-" ? this.check(-value.n, value.d) : value;
     }
     return this.power(depth + 1);
   }
 
-  private power(depth: number): number {
+  private power(depth: number): Fraction {
     this.guardDepth(depth);
     let value = this.primary(depth + 1);
     if (this.peek() === "^") {
       this.take();
       const exponent = this.unary(depth + 1);
-      if (!Number.isInteger(exponent) || exponent < -100 || exponent > 100) {
+      if (exponent.d !== 1n || exponent.n < -100n || exponent.n > 100n) {
         throw new ToolInputFault("power exponent must be an integer from -100 to 100");
       }
-      if (value === 0 && exponent < 0) throw new ToolInputFault("zero cannot be raised to a negative power");
+      if (value.n === 0n && exponent.n < 0n) throw new ToolInputFault("zero cannot be raised to a negative power");
       this.countNode();
-      value = this.check(value ** exponent);
+      const power = exponent.n < 0n ? -exponent.n : exponent.n;
+      const bits = Math.max(value.n.toString(2).length, value.d.toString(2).length);
+      if ((bits - 1) * Number(power) > MAX_ARITHMETIC_BITS) throw new ToolLimitFault("arithmetic precision exceeds 16384 bits");
+      value = exponent.n < 0n ? this.check(value.d ** power, value.n ** power) : this.check(value.n ** power, value.d ** power);
     }
     return value;
   }
 
-  private primary(depth: number): number {
+  private primary(depth: number): Fraction {
     this.guardDepth(depth);
     const token = this.peek();
     if (token === "(") {
@@ -128,12 +134,38 @@ class ArithmeticParser {
     if (!token || !/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(token)) throw new ToolInputFault("expected a decimal number");
     this.take();
     this.countNode();
-    return this.check(Number(token));
+    const [whole = "0", decimal = ""] = token.split(".");
+    return this.check(BigInt((whole || "0") + decimal), 10n ** BigInt(decimal.length));
   }
 
-  private check(value: number): number {
-    if (!Number.isFinite(value) || Math.abs(value) > 1e100) throw new ToolLimitFault("intermediate result is non-finite or exceeds 1e100");
-    return value;
+  /** Keep decimal literals and intermediate results exact; no answer rounding rule. */
+  private check(n: bigint, d = 1n): Fraction {
+    if (d === 0n) throw new ToolInputFault("division by zero is not allowed");
+    if (n === 0n) return { n: 0n, d: 1n };
+    if (d < 0n) { n = -n; d = -d; }
+    let a = n < 0n ? -n : n, b = d;
+    while (b !== 0n) { const remainder = a % b; a = b; b = remainder; }
+    n /= a; d /= a;
+    if ((n < 0n ? -n : n) > d * MAX_ARITHMETIC_MAGNITUDE) throw new ToolLimitFault("intermediate result is non-finite or exceeds 1e100");
+    if (Math.max(n.toString(2).length, d.toString(2).length) > MAX_ARITHMETIC_BITS) throw new ToolLimitFault("arithmetic precision exceeds 16384 bits");
+    return { n, d };
+  }
+
+  /** One final IEEE-754 conversion, including ties-to-even and subnormals. */
+  private toNumber({ n, d }: Fraction): number {
+    if (n === 0n) return 0;
+    const negative = n < 0n;
+    if (negative) n = -n;
+    let exponent = n.toString(2).length - d.toString(2).length;
+    if (exponent >= 0 ? n < (d << BigInt(exponent)) : (n << BigInt(-exponent)) < d) exponent--;
+    const shift = exponent < -1022 ? 1074 : 52 - exponent;
+    const numerator = shift >= 0 ? n << BigInt(shift) : n;
+    const denominator = shift >= 0 ? d : d << BigInt(-shift);
+    let significand = numerator / denominator;
+    const twiceRemainder = (numerator % denominator) * 2n;
+    if (twiceRemainder > denominator || (twiceRemainder === denominator && significand % 2n !== 0n)) significand++;
+    const value = Number(significand) * 2 ** -shift;
+    return negative ? -value : value;
   }
 
   private countNode(): void {

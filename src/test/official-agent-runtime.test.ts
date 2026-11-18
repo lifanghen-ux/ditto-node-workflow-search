@@ -28,6 +28,18 @@ test('official compiler executes a native SAMPLE with host messages and real usa
  assert.equal(result.sourceMap.main!.solve!.nodeId,'solve');assert.equal(result.rawNodeOutputs['main/solve'].output.message.content,'42');
 });
 
+test('a failed public condition is observable and diagnosed without being converted to an official score',async()=>{
+ const definition:any={version:1,id:'public-check-fixture',graphs:{main:{nodes:[
+  {id:'check',type:'INTERACTION.ACT.TOOL',input:{call:{id:'condition',name:'public_data_check',arguments:{operation:'compare',relation:'equal',actual:5,target:4}}}},
+  {id:'show',type:'HOST.DATA.TRANSFORM',dependsOn:['check'],input:{operation:'text',value:{$ref:'nodes.check.structuredContent.passed'}}},
+ ],output:{$ref:'nodes.show'}}}};
+ const {result,calls}=await execute(definition);
+ assert.equal(result.answer,'false');assert.equal(calls.length,0);
+ assert(result.trace.some((event:any)=>event.publicDiagnostics?.some((issue:any)=>issue.code==='PUBLIC_CHECK_FAILED')));
+ assert.equal(result.rawNodeOutputs['main/check'].status,'success');
+ assert.equal(result.rawNodeOutputs['main/check'].structuredContent.passed,false);
+});
+
 test('host rejects provider-incompatible message content with a public field path before any paid call',async()=>{
  for(const content of [['plain string array'],{unexpected:'JSON object'},42]){
   const definition=base();definition.graphs.main.nodes[0].input.messages={$op:'concat',args:[ref('input.host.messages'),[{role:'user',content}]]};
@@ -102,6 +114,31 @@ test('ordinary registered tool errors remain actual observations for a following
   {id:'evidence',type:'HOST.DATA.TRANSFORM',dependsOn:['observation'],input:{operation:'json',value:ref('nodes.observation')}});
  solver.dependsOn=['evidence'];solver.input.messages={$op:'concat',args:[ref('input.host.messages'),[{role:'user',content:ref('nodes.evidence')}]]};
  const {result,calls}=await execute(definition);assert.equal(result.answer,'42');assert.equal(result.rawNodeOutputs['main/arith'].status,'failed');assert.match(JSON.stringify(calls[0].messages),/unsupported characters/);
+});
+
+test('evidence pairs an observation with its actual tool arguments even when call IDs are reused',async()=>{
+ const definition=base(),solver=definition.graphs.main.nodes[0];
+ definition.graphs.main.nodes.unshift(
+  {id:'first',type:'INTERACTION.ACT.TOOL',input:{call:{id:'shared',name:'bounded_arithmetic',arguments:{expression:'1+1'}}}},
+  {id:'observed',type:'INTERACTION.OBSERVE',dependsOn:['first'],input:{result:ref('nodes.first')}},
+  {id:'later',type:'INTERACTION.ACT.TOOL',dependsOn:['observed'],input:{call:{id:'shared',name:'bounded_arithmetic',arguments:{expression:'2+2'}}}},
+  {id:'evidence',type:'HOST.DATA.TRANSFORM',dependsOn:['observed','later'],input:{operation:'evidence',value:ref('nodes.observed'),provenance:[{executedToolCall:{arguments:{expression:'forged'}}}]}},
+ );
+ solver.dependsOn=['evidence'];solver.input.messages={$op:'concat',args:[ref('input.host.messages'),[{role:'user',content:ref('nodes.evidence')}]]};
+ const {result}=await execute(definition),evidence=result.rawNodeOutputs['main/evidence'];
+ assert.match(evidence,/"executedToolCall":\{"id":"shared","name":"bounded_arithmetic","arguments":\{"expression":"1\+1"\}\}/);
+ assert.match(evidence,/"result":2/);assert.doesNotMatch(evidence,/2\+2|forged/);
+ assert.equal(result.rawNodeOutputs['main/later'].structuredContent.result,4);
+});
+
+test('repeated native tool events retain their own call input rather than the final node snapshot',async()=>{
+ const definition:any={version:1,id:'tool-trace',graphs:{main:{nodes:[{id:'tool',type:'INTERACTION.ACT.TOOL',input:{call:{id:'arithmetic',name:'bounded_arithmetic',arguments:{expression:ref('input.expression')}}}}],output:ref('nodes.tool')}},
+  loop:{entry:'repeat',maxIterations:2,state:{round:0,expression:'1+1',answer:'done'},steps:{repeat:{graph:'main',input:{expression:ref('state.expression')},assign:{round:{$op:'add',args:[ref('state.round'),1]},expression:'2+2'},transitions:[{when:{$op:'gte',args:[ref('state.round'),2]},end:'completed'},{next:'repeat'}]}},output:ref('state.answer')}};
+ const {result,calls}=await execute(definition);
+ const all=result.trace as any[],events=all.filter(event=>event.nodeType==='INTERACTION.ACT.TOOL');assert.equal(calls.length,0);assert.equal(events.length,2);
+ assert.deepEqual(events.map(event=>event.input.call.arguments.expression),['1+1','2+2']);
+ assert.deepEqual(all.filter(event=>event.nodeType==='HOST.LOOP.BOUNDARY').map(event=>event.output.state.round),[1,2]);
+ assert.equal(result.nodeInputs['main/tool'].call.arguments.expression,'2+2');
 });
 
 test('official-world infrastructure failures cannot become normal tool observations or quality zero',async()=>{

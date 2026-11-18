@@ -1,6 +1,8 @@
 import { Worker } from "node:worker_threads";
 import type { JsonObject, JsonValue, RegisteredTool } from "@codesoul-co/ditto";
 import { timeBudgetCleanupRegistrar } from "../execution/time-budget.js";
+import {checkPublicData,PublicCheckInputError,PUBLIC_CHECK_INPUT_SCHEMA} from './public-checks.js';
+import {createPublicPythonCheck} from './public-python-check.js';
 
 export class CapabilityToolInputError extends Error {
   readonly kind = "input";
@@ -145,7 +147,7 @@ class ToolWorkerManager {
   }
 }
 
-const owners = new WeakMap<readonly RegisteredTool[], ToolWorkerManager>();
+const owners = new WeakMap<readonly RegisteredTool[], {manager:ToolWorkerManager;python:ReturnType<typeof createPublicPythonCheck>}>();
 
 export function createBenchmarkTools(options: CapabilityToolFactoryOptions = {}): readonly RegisteredTool[] {
   if (options.testDelayMs !== undefined && (!Number.isInteger(options.testDelayMs) || options.testDelayMs < 0 || options.testDelayMs > 5000)) {
@@ -153,13 +155,14 @@ export function createBenchmarkTools(options: CapabilityToolFactoryOptions = {})
   }
   if (options.testCrash !== undefined && typeof options.testCrash !== 'boolean') throw new TypeError('testCrash must be boolean');
   const manager = new ToolWorkerManager(options.testDelayMs, options.testCrash);
+  const python=createPublicPythonCheck();
   const tools: readonly RegisteredTool[] = [
     {
       name: "bounded_arithmetic",
-      description: "Evaluate bounded decimal arithmetic with +, -, *, /, parentheses, and integer powers.",
+      description: "Evaluate bounded decimal arithmetic with +, -, *, /, parentheses, and integer powers. Requires a nonempty expression; route non-arithmetic tasks around this tool rather than invoking it with an empty string.",
       inputSchema: {
         type: "object",
-        properties: { expression: { type: "string", maxLength: 4096 } },
+        properties: { expression: { type: "string", minLength:1, maxLength: 4096 } },
         required: ["expression"],
         additionalProperties: false,
       },
@@ -201,16 +204,21 @@ export function createBenchmarkTools(options: CapabilityToolFactoryOptions = {})
         }
       },
     },
+    python,
+    {name:'public_data_check',description:'Check explicit public values against a declared relation, or select all numeric rows by a filter / 1-based rank. Optional selection is checked as a complete set, detecting missing and extra IDs. Ties at a requested rank are reported as ambiguous. This checks supplied data and rules, not their interpretation or source completeness.',inputSchema:PUBLIC_CHECK_INPUT_SCHEMA,effects:[],validate(){},async execute(args){
+      try{return{status:'success',structuredContent:checkPublicData(args)};}
+      catch(error){if(error instanceof PublicCheckInputError)return{status:'failed',error:{code:'B_TOOL_INPUT',message:error.message,retryable:false}};throw error;}
+    }},
   ];
-  owners.set(tools, manager);
+  owners.set(tools, {manager,python});
   return tools;
 }
 
 export async function closeBenchmarkTools(tools: readonly RegisteredTool[]): Promise<void> {
-  const manager = owners.get(tools);
-  if (!manager) return;
+  const owner = owners.get(tools);
+  if (!owner) return;
   owners.delete(tools);
-  await manager.close();
+  await Promise.all([owner.manager.close(),owner.python.close()]);
 }
 
 function validateExactStringArgs(args: JsonObject, allowed: readonly string[]): void {

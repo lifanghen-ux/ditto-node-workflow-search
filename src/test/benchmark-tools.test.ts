@@ -28,6 +28,17 @@ describe("Benchmark tools", () => {
     });
   });
 
+  it('preserves decimal arithmetic and cancellation before converting the final number', async () => {
+    const tools=createBenchmarkTools();ownedToolSets.push(tools);
+    for(const [expression,result] of [
+      ['100 - 77.2',22.8],['0.1 + 0.2',0.3],['(1 / 3) * 3',1],
+      ['9007199254740993 - 9007199254740992',1],['2 ^ -100',2 ** -100],
+      ['0.'+'0'.repeat(323)+'5',Number.MIN_VALUE],['0.'+'0'.repeat(324)+'1',0],
+    ] as const){
+      assert.deepEqual(await callTool(tools,'bounded_arithmetic',{expression}),{status:'success',structuredContent:{result}},expression);
+    }
+  });
+
   it("rejects code, malformed input, and tool-schema keys", async () => {
     const tools = createBenchmarkTools();
     ownedToolSets.push(tools);

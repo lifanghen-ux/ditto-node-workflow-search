@@ -100,6 +100,7 @@ function loadedCode(
   const references = new Map(rows.map((row) => [row.task.id, row.reference]));
   const tasks = Object.freeze(rows.map((row) => row.task));
   const scorer: PrivateScorer = {
+    predictionOnlyRecovery: true,
     async score(taskId, prediction): Promise<ScoreEvidence> {
       const reference = referenceFor(references, taskId, dataset);
       const candidate = extractPythonCandidate(prediction, reference.publicPrompt, reference.entryPoint, dataset);
@@ -126,13 +127,30 @@ function loadedCode(
       return "pass private tests";
     },
   };
+  const evaluate = async (selected: readonly BenchmarkTask[], runner: BenchmarkRunner, options?: BenchmarkEvaluationOptions) => {
+    // Loading/offline inspection needs no running Docker daemon. Actual full
+    // and subset evaluations must check it before spending generation tokens.
+    const repeats = options?.repeats ?? 1;
+    if (Number.isInteger(repeats) && repeats > 0) {
+      const completed = new Set(options?.priorCases?.filter(row => row.valid === true && row.error === undefined).map(row => row.caseId));
+      const pending = selected.some(task => {
+        for (let repeat = 1; repeat <= repeats; repeat++) if (!completed.has(`${task.id}#${repeat}`)) return true;
+        return false;
+      });
+      if (pending) try { await judge.preflight?.(); }
+      catch (error) {
+        throw Object.assign(error instanceof Error ? error : new Error(String(error)), { failureKind: "judge", infrastructureFailure: true });
+      }
+    }
+    return evaluateTasks(selected, scorer, runner, options);
+  };
   return Object.freeze({
     dataset,
     split,
     tasks,
     identity,
-    evaluate: (runner: BenchmarkRunner, options?: BenchmarkEvaluationOptions) => evaluateTasks(tasks, scorer, runner, options),
-    evaluateSearchSubset: (taskIds: readonly string[], runner: BenchmarkRunner, options?: BenchmarkEvaluationOptions) => evaluateTasks(searchSubset(split,tasks,taskIds),scorer,runner,options),
+    evaluate: (runner: BenchmarkRunner, options?: BenchmarkEvaluationOptions) => evaluate(tasks, runner, options),
+    evaluateSearchSubset: (taskIds: readonly string[], runner: BenchmarkRunner, options?: BenchmarkEvaluationOptions) => evaluate(searchSubset(split,tasks,taskIds),runner,options),
   });
 }
 

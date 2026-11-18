@@ -148,7 +148,7 @@ export function validateDefinition(input:unknown):GraphDefinition{
  keys(d.output,['nodeId','view','answer']);const outputIds:string[]=[];
  if(Object.hasOwn(d.output,'answer')){check(d.version===2,'Native output binding requires version 2');check(d.output.nodeId===undefined&&d.output.view===undefined,'Choose answer binding OR nodeId/view');validateSource(d.output.answer);outputIds.push(...bindingReferences(d.output.answer).filter(r=>!r.optional).map(r=>r.nodeId),...sources(d.output.answer).filter(s=>s.from==='node').map(s=>(s as Extract<SemanticSource,{from:'node'}>).nodeId));for(const exit of exits)references(d.output.answer,exit.id);}
  else{check(d.output.view==='answer','Final output must be answer view');const output=nodes.get(d.output.nodeId!);check(output&&output.node.type.startsWith('INFER.REASONING.'),'Output must be an Infer node');outputIds.push(d.output.nodeId!);for(const exit of exits)check(dom.get(exit.id)!.has(output!.graph),'Output node may be skipped on an ending route');}
- const builtins=['bounded_arithmetic','literal_text_find',...AUTOMATION_TOOLS];
+ const builtins=['bounded_arithmetic','literal_text_find','public_data_check','public_python_check',...AUTOMATION_TOOLS];
  if(d.tools!==undefined){check(Array.isArray(d.tools)&&d.tools.length<=6,'At most six tools','tools');const names=new Set<string>();for(const[i,t]of d.tools.entries())atDefinitionPath(`tools[${i}]`,()=>{
   const path=`tools[${i}]`;keys(t,['name','description','inputSchema','executeSource'],path);
   check(!builtins.includes(t.name),'Cannot redefine a host tool',`${path}.name`,'Remove this generated tool declaration and call the already registered host tool through ACT.TOOL.');

@@ -13,7 +13,10 @@ export function transformOfficialData(input:any,progress?:ToolProgressTracker):a
   case'automation-review':return automationReview(input,progress);
   case'automation-review-feedback':return automationReviewFeedback(input);
   case'json':return JSON.stringify(value);
-  case'text':return typeof value==='string'?value:JSON.stringify(value);
+  case'text':{
+   if(input.preserveNull!==undefined&&typeof input.preserveNull!=='boolean')throw new BindingContractError('text preserveNull must be boolean');
+   return input.preserveNull===true&&value==null?null:typeof value==='string'?value:JSON.stringify(value);
+  }
   case'parse':{
    if(typeof value!=='string')throw new BindingContractError('HOST.DATA.TRANSFORM parse requires string value');
    try{return JSON.parse(value);}catch{

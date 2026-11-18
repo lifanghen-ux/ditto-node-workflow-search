@@ -29,7 +29,26 @@ function child(direction:string,parent:any=OFFICIAL_BASELINE):any{
  }
  return{rationale:'Test one functional node with necessary reference wiring',definition:d};
 }
+
 function summary(d:any){return{valid:true,score:.5,standardDeviation:0,repeats:1,examples:1,successfulRuns:1,failedRuns:0,wrongRuns:0,timeoutRuns:0,inputTokens:1,outputTokens:1,totalTokens:2,durationMs:0,results:[{caseId:task.id+'#1',valid:true,score:.5,prediction:'49',expected:'PRIVATE_SENTINEL',normalizedExpected:'PRIVATE_SENTINEL',normalizedPrediction:'49',method:'fixture',latencyMs:0,inputTokens:1,outputTokens:1,totalTokens:2}],publicTraces:[{executedNodeIds:expandedOfficialNodes(d).map(n=>n.id)}]};}
+
+test('measured archive preserves alternative feedback without rerunning seeds, and stops at the explicit score target',async()=>{
+ const seeds=[1,2].map(index=>{const definition=clone(OFFICIAL_BASELINE);definition.config.strategy='Measured strategy '+index;
+  return{id:`official-000${index}`,parentId:null,status:'valid' as const,designRound:0,proposalAttempt:0,definition,rationale:'Measured public alternative',artifactHash:officialArtifactHash(definition),evaluation:summary(definition)};});
+ let proposals=0,evaluations=0;
+ const runtime:any={async run(_graph:unknown,input:{request:string}){proposals++;const request=JSON.parse(input.request);
+  assert.equal(request.measuredFeedback.feedback.length,2);assert.equal(request.immutableProtocol.evaluationContract.scoredArtifact,'final-answer-text');
+  assert.equal(request.searchObjective.mode,'quality-recovery');assert.equal(request.searchObjective.bestMeasuredScore,.5);
+  assert.doesNotMatch(input.request,/PRIVATE_SENTINEL/);
+  const definition=clone(seeds[1]!.definition);definition.config.strategy='New supported strategy';
+  return{proposal:{status:'success',output:{message:{content:JSON.stringify({rationale:'Compare the archived strengths',definition})}}}};
+ }};
+ const result=await searchOfficialWorkflows({runtime,model:{provider:'mock',model:'mock'},dataset:'drop',publicTasks:[task],expectedRepeats:1,exploration:false,
+  measuredSeeds:seeds,targetScore:1,maxValidEvaluations:4,maxDesignRounds:3,evaluate:async definition=>{evaluations++;const value=summary(definition);return{...value,score:1,results:value.results.map(row=>({...row,score:1}))};}});
+ assert.equal(proposals,1);assert.equal(evaluations,1);assert.equal(result.state.validEvaluations,3);assert.equal(result.best.id,'official-0003');assert.equal(result.stoppedBecause,'score-target');
+ const invalid=clone(seeds);invalid[0].evaluation.score=1;
+ await assert.rejects(searchOfficialWorkflows({runtime,model:{provider:'mock',model:'mock'},dataset:'drop',publicTasks:[task],expectedRepeats:1,exploration:false,measuredSeeds:invalid,evaluate:async()=>{throw Error('Must not evaluate an invalid archive');}}),/score does not match/);
+});
 
 test('official proposals keep metadata/tools outside the native definition and reject legacy formats',()=>{
  assert.equal(parseOfficialProposal(JSON.stringify({rationale:'Keep this native Agent configuration',definition:OFFICIAL_BASELINE})).definition.version,1);

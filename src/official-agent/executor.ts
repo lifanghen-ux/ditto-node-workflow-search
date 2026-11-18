@@ -29,9 +29,10 @@ import {createToolProgressTracker} from './progress.js';
 import {HOST_INFER_MESSAGES_SCHEMA} from './native-contracts.js';
 import {validateNativeLiteral} from './native-validation.js';
 import {DefinitionError} from '../graph-agent/schema.js';
+import {nullFallbackDiagnostics,loopResultDiagnostics,publicToolDiagnostics,type PublicDataflowDiagnostic} from './dataflow-diagnostics.js';
 
 export const OFFICIAL_EXECUTOR_VERSION='ditto-official-compiled-agent-v1';
-export const OFFICIAL_EVIDENCE_VERSION='official-native-source-map-v1';
+export const OFFICIAL_EVIDENCE_VERSION='official-native-source-map-v3-executable-checks';
 
 export class OfficialAgentContractError extends Error {
  readonly code='OFFICIAL_AGENT_CONTRACT';readonly failureKind='execution';readonly publicMessage:string;
@@ -83,7 +84,8 @@ export async function runOfficialAgent(definition:AgentDefinition,task:Benchmark
  const signal=currentTimeBudgetSignal(),automation=automationScope.getStore(),bfcl=bfclScope.getStore();
  if(task.dataset==='automationbench'&&!automation)throw new OfficialAgentContractError('Automation execution requires a fresh official task world');
  if(task.dataset==='bfcl'&&!bfcl)throw new OfficialAgentContractError('BFCL execution requires a fresh official conversation world');
- const toolCatalog=automation?`Available official task-world tools:\n${JSON.stringify(automation.tools)}`:bfcl?`${BFCL_GUIDE}\nAvailable official conversation tools:\n${JSON.stringify(bfcl.tools)}`:'';
+ const bfclTools=createBfclTools();
+ const toolCatalog=automation?`Available official task-world tools:\n${JSON.stringify(automation.tools)}`:bfcl?`${BFCL_GUIDE}\nAvailable official conversation tools:\n${JSON.stringify(bfclTools.map(({name,description,inputSchema})=>({name,description,inputSchema})))}`:'';
  const taskRequirements=taskOutputRequirements(task),originalTaskMessage={role:'user' as const,content:`Original task:\n${task.prompt}\n\nTask output requirements:\n${taskRequirements}`};
  const model={provider:shared.providerName,model:shared.model};
  const host={model,generation:GENERATION,system:NODE_SYSTEM_PROMPT,taskRequirements,originalTaskMessage,taskMessage:originalTaskMessage.content,
@@ -92,7 +94,7 @@ export async function runOfficialAgent(definition:AgentDefinition,task:Benchmark
  const standard=createBenchmarkTools(),retrieval=createTaskRetrieval(task);
  const contract=graphAgentReflectionProvider(shared.provider),modelResponses:ModelResponseRecord[]=[],audits:CheckerAudit[]=[];
  const nodeInputs:Record<string,any>={},nodeOutputs:Record<string,any>={},rawNodeOutputs:Record<string,any>={};
- const executedNodeIds:string[]=[],executedGraphIds:string[]=[],trace:{graphId:string;nodeId:string;output:unknown}[]=[];
+ const executedNodeIds:string[]=[],executedGraphIds:string[]=[],trace:{graphId:string;nodeId:string;nodeType:string;input?:{call:unknown};publicDiagnostics?:readonly PublicDataflowDiagnostic[];output:unknown}[]=[];
  const reflectionBindings=new Map<string,ReflectionBinding>();
  const exhaustedReflections=new Map<string,string>();let providerFault:unknown,state:Record<string,unknown>={},firstSample=true;
  const recordingProvider:ModelProvider={async invoke(request,invokeOptions){
@@ -103,7 +105,10 @@ export async function runOfficialAgent(definition:AgentDefinition,task:Benchmark
   }catch(error){providerFault=error;throw error;}
  }};
  const progress=createToolProgressTracker();
- const scoped=createExperimentRuntime(settings,{provider:recordingProvider,managedProvider:true,tools:[...standard,...createAutomationTools(),...createBfclTools(),...(options.tools??[])],workers:[retrieval.worker,createOfficialDataWorker(progress),...(options.workers??[])],memory:createTaskMemory(),reflectionEvent:async event=>{
+ // Pin each public observation to its actual invocation before a later Loop
+ // iteration overwrites the same node's inputs.
+ const toolOrigins=new Map<string,{call:unknown;output:unknown}>();
+ const scoped=createExperimentRuntime(settings,{provider:recordingProvider,managedProvider:true,tools:[...standard,...createAutomationTools(),...bfclTools,...(options.tools??[])],workers:[retrieval.worker,createOfficialDataWorker(progress),...(options.workers??[])],memory:createTaskMemory(),reflectionEvent:async event=>{
   if(event.outcome==='exhausted')exhaustedReflections.set(String(event.nodeId),event.error??'Model reflection did not satisfy its fixed response contract');
   await shared.reflectionEvent?.(event);
  }});
@@ -152,14 +157,32 @@ export async function runOfficialAgent(definition:AgentDefinition,task:Benchmark
    const declaration=declarationFor(event),source=sourceFor(event);
    prepared.provenance=references(declaration?.input).filter(r=>r.startsWith('nodes.')).map(ref=>{
     const [,id,...path]=ref.split('.'),producer=definition.graphs[source?.graphId??'']?.nodes.find(n=>n.id===id);
-    return{graphId:source?.graphId,nodeId:id,nativePath:path,...(producer&&'type'in producer?{nodeType:producer.type}:{})};
+    const concreteId=`${event.graphId}/${event.nodeId.slice(0,event.nodeId.lastIndexOf('/')+1)}${id}`;
+    const origin=toolOrigins.get(concreteId);
+    return{graphId:source?.graphId,nodeId:id,nativePath:path,...(producer&&'type'in producer?{nodeType:producer.type}:{}),
+     ...(origin?{executedToolCall:structuredClone(origin.call)}:{})};
    });
   }
   nodeInputs[nodeId]=structuredClone(prepared);return prepared;
  };
  const complete=(event:CapabilityCompletion):unknown=>{
   const nodeId=key(event),type=String(event.nodeType),raw=event.output as any;
-  rawNodeOutputs[nodeId]=structuredClone(raw);executedNodeIds.push(nodeId);trace.push({graphId:event.graphId,nodeId:event.nodeId,output:structuredClone(raw)});
+  rawNodeOutputs[nodeId]=structuredClone(raw);executedNodeIds.push(nodeId);
+  if(type==='INTERACTION.ACT.TOOL')toolOrigins.set(nodeId,{call:structuredClone(nodeInputs[nodeId]?.call),output:structuredClone(raw)});
+  if(type==='INTERACTION.OBSERVE'){
+   toolOrigins.delete(nodeId);
+   const ref=(declarationFor(event)?.input as any)?.result?.$ref;
+   if(typeof ref==='string'&&/^nodes\.[^.]+$/.test(ref)){
+    const sourceId=`${event.graphId}/${event.nodeId.slice(0,event.nodeId.lastIndexOf('/')+1)}${ref.split('.')[1]}`,origin=toolOrigins.get(sourceId);
+    if(origin&&isDeepStrictEqual(origin.output,nodeInputs[nodeId]?.result))toolOrigins.set(nodeId,structuredClone(origin));
+   }
+  }
+  const publicDiagnostics=type==='HOST.DATA.TRANSFORM'?nullFallbackDiagnostics(event.graphId,event.nodeId,declarationFor(event),nodeInputs,rawNodeOutputs):type==='INTERACTION.ACT.TOOL'?publicToolDiagnostics(event.graphId,event.nodeId,nodeInputs[nodeId],raw):[];
+  // Snapshot this invocation before a later Loop iteration overwrites nodeInputs.
+  // Inference messages are already in full artifacts; do not duplicate them here.
+  trace.push({graphId:event.graphId,nodeId:event.nodeId,nodeType:type,
+   ...(type==='INTERACTION.ACT.TOOL'?{input:{call:structuredClone(nodeInputs[nodeId]?.call)}}:{}),
+   ...(publicDiagnostics.length?{publicDiagnostics}:{}),output:structuredClone(raw)});
   if(automation&&type==='INTERACTION.ACT.TOOL'){
    const call=nodeInputs[nodeId]?.call;
    if(call&&(AUTOMATION_TOOLS as readonly string[]).includes(call.name))progress.record(call,raw);
@@ -190,7 +213,14 @@ export async function runOfficialAgent(definition:AgentDefinition,task:Benchmark
   generationOutcomes:Object.values(nodeOutputs).flatMap(value=>value?.output?.generationOutcome?[value.output.generationOutcome]:[]),...(modelFailure?{modelFailure}:{})});
  try{
   const answer=await captureCapabilityExecution({before:prepare,after:complete},()=>compiled.run(scoped.runtime,input,{
-   ...(signal?{signal}:{}),onGraph:event=>{if(event.status==='started')executedGraphIds.push(event.graphId);},onBoundary:boundary=>{state=structuredClone(boundary.state);},
+   ...(signal?{signal}:{}),onGraph:event=>{if(event.status==='started')executedGraphIds.push(event.graphId);},onBoundary:boundary=>{
+    state=structuredClone(boundary.state);
+    const step=definition.loop?.steps[boundary.step],graphId=step?.graph??'main';
+    const publicDiagnostics=loopResultDiagnostics(graphId,boundary.step,step?.assign,boundary.result);
+    trace.push({graphId,nodeId:`@loop:${boundary.step}:${boundary.iteration}`,nodeType:'HOST.LOOP.BOUNDARY',
+     ...(publicDiagnostics.length?{publicDiagnostics}:{}),
+     output:structuredClone({step:boundary.step,iteration:boundary.iteration,result:boundary.result,state:boundary.state})});
+   },
   }));
   return result(messageText(answer,'output'));
  }catch(error){

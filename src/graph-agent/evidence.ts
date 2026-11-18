@@ -1,7 +1,7 @@
 import {bindingReferences} from './bindings.js';
 import {sources,type DefinitionGraph} from './schema.js';
 
-export const EVIDENCE_PRESENTATION_VERSION='native-evidence-provenance-v1';
+export const EVIDENCE_PRESENTATION_VERSION='native-evidence-provenance-v2-tool-inputs';
 /** Presentation metadata never changes native values, binding paths or final outputs. */
 export function evidenceSources(binding:unknown,graphs:readonly DefinitionGraph[]){
  const nodes=new Map(graphs.flatMap(g=>g.nodes.map(n=>[n.id,{node:n,graph:g.id}] as const)));
